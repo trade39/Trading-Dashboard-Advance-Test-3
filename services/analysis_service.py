@@ -2,7 +2,8 @@
 services/analysis_service.py
 
 Orchestrates analytical calculations and model executions.
-Includes a standalone function for fetching benchmark data.
+Includes a standalone function for fetching benchmark data,
+with yfinance call isolated for caching robustness.
 """
 import streamlit as st
 import pandas as pd
@@ -42,58 +43,69 @@ except ImportError as e:
 import logging
 logger = logging.getLogger(APP_TITLE)
 
+# --- Non-cached helper for yfinance download ---
+def _fetch_yf_data(ticker: str, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> Optional[pd.DataFrame]:
+    """
+    Internal helper to fetch data using yfinance. Not cached itself.
+    """
+    logger_fetch = logging.getLogger(f"{APP_TITLE}._fetch_yf_data")
+    try:
+        logger_fetch.info(f"Fetching yfinance data for {ticker} from {start_dt.date()} to {end_dt.date()}")
+        # yfinance end_date is inclusive for daily data. Add 1 day to ensure end_dt is included.
+        data = yf.download(ticker, start=start_dt, end=end_dt + pd.Timedelta(days=1), progress=False, auto_adjust=True, actions=False)
+        if data.empty:
+            logger_fetch.warning(f"yf.download returned empty DataFrame for {ticker}.")
+            return None
+        return data
+    except Exception as e:
+        logger_fetch.error(f"Exception in _fetch_yf_data for {ticker}: {e}", exc_info=True)
+        return None
+
 # --- Standalone Cached Function for Benchmark Data ---
-# Temporarily commenting out @st.cache_data for debugging the UnhashableTypeError
-# @st.cache_data(ttl=3600) 
-def get_benchmark_data_static( 
+@st.cache_data(ttl=3600, show_spinner="Fetching benchmark data...") 
+def get_benchmark_data_static(
     ticker: str, 
     start_date_str: str, 
     end_date_str: str
 ) -> Optional[pd.Series]:
-    """
-    Fetches historical 'Adj Close' prices for a given ticker and calculates daily returns.
-    Dates are expected as ISO format strings.
-    This is a module-level function.
-    Caching is temporarily disabled for debugging.
-    """
     logger_static_func = logging.getLogger(f"{APP_TITLE}.get_benchmark_data_static")
-    logger_static_func.info(f"Executing get_benchmark_data_static (caching TEMPORARILY DISABLED) for {ticker} from {start_date_str} to {end_date_str}")
+    logger_static_func.info(f"get_benchmark_data_static called for {ticker} ({start_date_str} to {end_date_str})")
 
     if not ticker:
         logger_static_func.info("No benchmark ticker provided. Skipping data fetch.")
         return None
     try:
-        logger_static_func.debug("Attempting to convert date strings to datetime objects...")
-        start_dt = pd.to_datetime(start_date_str)
-        end_dt = pd.to_datetime(end_date_str)
-        logger_static_func.debug(f"Converted dates: start_dt={start_dt}, end_dt={end_dt}")
+        # Ensure arguments are plain strings for hashing robustness
+        plain_ticker = str(ticker)
+        plain_start_date_str = str(start_date_str)
+        plain_end_date_str = str(end_date_str)
+
+        start_dt = pd.to_datetime(plain_start_date_str)
+        end_dt = pd.to_datetime(plain_end_date_str)
 
         if start_dt >= end_dt:
-            logger_static_func.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str}. Cannot fetch data.")
+            logger_static_func.warning(f"Benchmark start date {plain_start_date_str} is not before end date {plain_end_date_str}. Cannot fetch data.")
             return None
 
-        fetch_end_dt = end_dt + pd.Timedelta(days=1)
-        logger_static_func.info(f"Attempting yf.download for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()})")
+        # Call the non-cached helper for the actual download
+        data = _fetch_yf_data(plain_ticker, start_dt, end_dt)
         
-        data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False, auto_adjust=True, actions=False)
-        logger_static_func.debug(f"yf.download result for {ticker}:\n{data.head() if not data.empty else 'Empty DataFrame'}")
-        
-        if data.empty or 'Close' not in data.columns:
-            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str}.")
+        if data is None or data.empty or 'Close' not in data.columns:
+            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {plain_ticker} in period {plain_start_date_str} - {plain_end_date_str}.")
             return None
         
         daily_adj_close = data['Close'].dropna()
         if len(daily_adj_close) < 2:
-            logger_static_func.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
+            logger_static_func.warning(f"Not enough benchmark data points for {plain_ticker} to calculate returns (<2).")
             return None
             
         daily_returns = daily_adj_close.pct_change().dropna()
-        daily_returns.name = f"{ticker}_returns"
+        daily_returns.name = f"{plain_ticker}_returns"
         
-        logger_static_func.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
+        logger_static_func.info(f"Successfully processed benchmark returns for {plain_ticker}. Shape: {daily_returns.shape}")
         return daily_returns
     except Exception as e:
-        logger_static_func.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
+        logger_static_func.error(f"Error processing benchmark data for {plain_ticker}: {e}", exc_info=True)
         return None
 
 class AnalysisService:
@@ -311,4 +323,4 @@ class AnalysisService:
         pnl_col = EXPECTED_COLUMNS.get('pnl')
         if not pnl_col or pnl_col not in trades_df.columns: return None
         try: return plot_pnl_distribution(trades_df, pnl_col=pnl_col, title="PnL Distribution (per Trade)", theme=theme)
-        except Exception as e: self.logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return None
+        except Exception as e: self.logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return {"error": str(e)} # Return error as string
