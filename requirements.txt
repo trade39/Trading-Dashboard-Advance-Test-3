@@ -25,6 +25,7 @@ prophet>=1.1.5
 lifelines>=0.28.0
 ruptures>=1.1.9
 scikit-learn>=1.5.0
+yfinance>=0.2.37 # Added for fetching benchmark data
 
 # Optional: for improved dependency management
 # poetry>=1.7.0
