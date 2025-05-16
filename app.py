@@ -7,7 +7,7 @@ import numpy as np
 import logging
 import sys
 import os
-import datetime # For date operations
+import datetime 
 
 # --- Utility Modules ---
 try:
@@ -30,7 +30,8 @@ except ImportError as e:
 # --- Service Modules ---
 try:
     from services.data_service import DataService
-    from services.analysis_service import AnalysisService # Class name
+    # Import the standalone function directly
+    from services.analysis_service import AnalysisService, get_benchmark_data_static 
 except ImportError as e:
     st.error(f"Fatal Error: Could not import service modules. App cannot start. Details: {e}")
     logging.error(f"Fatal Error importing services: {e}", exc_info=True)
@@ -57,6 +58,11 @@ logger = setup_logger(
 )
 logger.info(f"Application '{APP_TITLE}' starting. Logger initialized.")
 logger.debug(f"CWD at app start: {os.getcwd()}, sys.path: {sys.path}")
+
+# --- Clear Cache (FOR DEBUGGING ONLY - REMOVE FOR PRODUCTION) ---
+# st.cache_data.clear()
+# logger.warning("Streamlit data cache cleared for debugging.")
+# --- End Clear Cache ---
 
 
 # --- Page Configuration (Global for all pages) ---
@@ -107,9 +113,8 @@ logger.debug("Global session state initialized/checked.")
 
 # --- Instantiate Services ---
 data_service = DataService()
-# analysis_service instance is still needed for other non-static methods
-analysis_service_instance = AnalysisService() # Keep instance for other methods
-logger.debug("DataService and AnalysisService instantiated.")
+analysis_service_instance = AnalysisService() 
+logger.debug("DataService and AnalysisService (instance) instantiated.")
 
 
 # --- Sidebar Rendering and Filter Management ---
@@ -216,14 +221,28 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                 min_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).min()
                 max_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).max()
                 
-                min_date_str = min_date_ts.strftime('%Y-%m-%d') if pd.notna(min_date_ts) else None
-                max_date_str = max_date_ts.strftime('%Y-%m-%d') if pd.notna(max_date_ts) else None
+                s_ticker = str(selected_ticker)
+                s_min_date = min_date_ts.strftime('%Y-%m-%d') if pd.notna(min_date_ts) else None
+                s_max_date = max_date_ts.strftime('%Y-%m-%d') if pd.notna(max_date_ts) else None
                 
-                if min_date_str and max_date_str:
-                    logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date_str} to {max_date_str}.")
-                    # Call as a static method on the class
-                    st.session_state.benchmark_daily_returns = AnalysisService.get_benchmark_data(
-                        selected_ticker, min_date_str, max_date_str 
+                # Manual Hash Test (for debugging, can be removed later)
+                logger.debug("--- Manual Hash Test for Benchmark Data Args ---")
+                logger.debug(f"  Ticker: '{s_ticker}' (Type: {type(s_ticker)})")
+                logger.debug(f"  Min Date Str: '{s_min_date}' (Type: {type(s_min_date)})")
+                logger.debug(f"  Max Date Str: '{s_max_date}' (Type: {type(s_max_date)})")
+                try:
+                    test_hash_tuple = (s_ticker, s_min_date, s_max_date)
+                    hash(test_hash_tuple)
+                    logger.debug(f"  Manual hash of args tuple {test_hash_tuple} SUCCEEDED.")
+                except TypeError as e_hash:
+                    logger.error(f"  Manual hash of args tuple {test_hash_tuple} FAILED: {e_hash}")
+                logger.debug("-------------------------------------------------")
+
+
+                if s_min_date and s_max_date:
+                    logger.info(f"Fetching benchmark data for {s_ticker} from {s_min_date} to {s_max_date}.")
+                    st.session_state.benchmark_daily_returns = get_benchmark_data_static(
+                        s_ticker, s_min_date, s_max_date 
                     )
                     st.session_state.last_fetched_benchmark_ticker = selected_ticker
                     st.session_state.last_benchmark_data_filter_shape = st.session_state.filtered_data.shape
@@ -258,9 +277,8 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
     if st.session_state.kpi_results is None or \
        st.session_state.last_kpi_calc_state_id != current_kpi_calc_state_id:
         
-        logger.info("Recalculating global KPIs and CIs...") # Removed "via AnalysisService" as it's direct
+        logger.info("Recalculating global KPIs and CIs...")
         with st.spinner("Calculating performance metrics & CIs..."):
-            # Use the instance for get_core_kpis
             kpi_service_result = analysis_service_instance.get_core_kpis(
                 st.session_state.filtered_data,
                 st.session_state.risk_free_rate,
@@ -273,7 +291,6 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                 st.session_state.last_kpi_calc_state_id = current_kpi_calc_state_id
                 logger.info("Global KPIs calculated.")
 
-                # Use the instance for get_bootstrapped_kpi_cis
                 ci_service_result = analysis_service_instance.get_bootstrapped_kpi_cis(
                     st.session_state.filtered_data,
                     kpis_to_bootstrap=['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
