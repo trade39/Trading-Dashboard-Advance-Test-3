@@ -11,12 +11,11 @@ import logging
 import plotly.graph_objects as go
 
 try:
-    # Added KPI_GROUPS_RISK_DURATION
     from config import APP_TITLE, EXPECTED_COLUMNS, COLORS, KPI_CONFIG, KPI_GROUPS_RISK_DURATION, AVAILABLE_BENCHMARKS
-    from utils.common_utils import display_custom_message # format_currency, format_percentage removed as not directly used
+    from utils.common_utils import display_custom_message
     from plotting import plot_correlation_matrix, _apply_custom_theme
-    from services.analysis_service import AnalysisService
-    from ai_models import LIFELINES_AVAILABLE
+    from services.analysis_service import AnalysisService # Import the class
+    from ai_models import LIFELINES_AVAILABLE # This imports the boolean flag
     from components.kpi_display import KPIClusterDisplay
 except ImportError as e:
     st.error(f"Risk & Duration Page Error: Critical module import failed: {e}.")
@@ -32,7 +31,8 @@ except ImportError as e:
     st.stop()
 
 logger = logging.getLogger(APP_TITLE)
-analysis_service = AnalysisService() # Instance for service calls
+# Create an instance of AnalysisService to call its methods
+analysis_service_instance = AnalysisService() 
 
 def show_risk_duration_page():
     st.title("📉 Risk & Duration Analysis")
@@ -42,27 +42,23 @@ def show_risk_duration_page():
         display_custom_message("Upload and process data to view this page.", "info"); return
     if 'kpi_results' not in st.session_state or st.session_state.kpi_results is None:
         display_custom_message("KPI results are not available. Ensure data is processed.", "warning"); return
-    if 'error' in st.session_state.kpi_results: # Check if kpi_results itself is an error dict
+    if 'error' in st.session_state.kpi_results: 
         display_custom_message(f"Error in KPI calculation: {st.session_state.kpi_results['error']}", "error"); return
 
     filtered_df = st.session_state.filtered_data
     kpi_results = st.session_state.kpi_results
     kpi_confidence_intervals = st.session_state.get('kpi_confidence_intervals', {})
     plot_theme = st.session_state.get('current_theme', 'dark')
-    benchmark_daily_returns = st.session_state.get('benchmark_daily_returns') # For benchmark-related risk KPIs
+    benchmark_daily_returns = st.session_state.get('benchmark_daily_returns') 
 
     if filtered_df.empty:
         display_custom_message("No data matches filters for risk and duration analysis.", "info"); return
 
-    # --- Key Risk Metrics Section ---
-    st.header("Key Risk Metrics") # Changed to header
-    
-    cols_per_row_setting = 3 # Adjust as needed for risk page
+    st.header("Key Risk Metrics") 
+    cols_per_row_setting = 3
 
     for group_name, kpi_keys_in_group in KPI_GROUPS_RISK_DURATION.items():
         group_kpi_results = {key: kpi_results[key] for key in kpi_keys_in_group if key in kpi_results}
-
-        # Special handling for Benchmark-related risk group
         if group_name == "Market Risk & Relative Performance":
             if benchmark_daily_returns is None or benchmark_daily_returns.empty:
                 if all(pd.isna(group_kpi_results.get(key, np.nan)) for key in kpi_keys_in_group):
@@ -83,14 +79,12 @@ def show_risk_duration_page():
                     cols_per_row=cols_per_row_setting
                 )
                 kpi_cluster_risk.render()
-                st.markdown("---") # Separator
+                st.markdown("---") 
             except Exception as e:
                 logger.error(f"Error rendering Key Risk Metrics for group '{group_name}': {e}", exc_info=True)
                 display_custom_message(f"An error occurred while displaying Key Risk Metrics for {group_name}: {e}", "error")
 
-    # --- Feature Correlation Matrix Section ---
-    # (This section remains largely the same as your latest version)
-    st.header("Advanced Risk Visualizations") # Changed to header
+    st.header("Advanced Risk Visualizations") 
     st.subheader("Feature Correlation Matrix")
     try:
         pnl_col_name = EXPECTED_COLUMNS.get('pnl')
@@ -125,8 +119,6 @@ def show_risk_duration_page():
         display_custom_message(f"An error displaying Feature Correlation Matrix: {e}", "error")
 
     st.markdown("---")
-    # --- Trade Duration Analysis (Survival Curve) ---
-    # (This section remains largely the same as your latest version)
     st.subheader("Trade Duration Analysis (Survival Curve)")
     if not LIFELINES_AVAILABLE:
         display_custom_message("Survival analysis tools (Lifelines library) are not available.", "warning")
@@ -137,7 +129,8 @@ def show_risk_duration_page():
             if not durations.empty and len(durations) >= 5:
                 event_observed = pd.Series([True] * len(durations), index=durations.index)
                 with st.spinner("Performing Kaplan-Meier survival analysis..."):
-                    km_service_results = analysis_service_instance.perform_kaplan_meier_analysis(durations, event_observed) # Use instance
+                    # Ensure this call uses the instance of AnalysisService
+                    km_service_results = analysis_service_instance.perform_kaplan_meier_analysis(durations, event_observed)
 
                 if km_service_results and 'error' not in km_service_results and 'survival_function_df' in km_service_results:
                     survival_df = km_service_results['survival_function_df']
@@ -152,8 +145,6 @@ def show_risk_duration_page():
                         conf_level = km_service_results.get("confidence_level", 0.95)
                         lower_ci_col = f'KM_estimate_lower_{conf_level:.2f}'.replace('0.', '') if conf_level != 0.95 else 'KM_estimate_lower_0.95'
                         upper_ci_col = f'KM_estimate_upper_{conf_level:.2f}'.replace('0.', '') if conf_level != 0.95 else 'KM_estimate_upper_0.95'
-                        # Lifelines might use slightly different naming, e.g. KM_estimate_lower_0.95
-                        # Check common variations
                         if lower_ci_col not in ci_df.columns and 'KM_estimate_lower_0.95' in ci_df.columns: lower_ci_col = 'KM_estimate_lower_0.95'
                         if upper_ci_col not in ci_df.columns and 'KM_estimate_upper_0.95' in ci_df.columns: upper_ci_col = 'KM_estimate_upper_0.95'
                         
