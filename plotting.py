@@ -11,21 +11,20 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from typing import List, Dict, Optional, Any
 
-# Assuming config.py is in the root directory
 from config import (
     COLORS, PLOTLY_THEME_DARK, PLOTLY_THEME_LIGHT,
     PLOT_BG_COLOR_DARK, PLOT_PAPER_BG_COLOR_DARK, PLOT_FONT_COLOR_DARK,
     PLOT_BG_COLOR_LIGHT, PLOT_PAPER_BG_COLOR_LIGHT, PLOT_FONT_COLOR_LIGHT,
     PLOT_LINE_COLOR, PLOT_MARKER_PROFIT_COLOR, PLOT_MARKER_LOSS_COLOR,
+    PLOT_BENCHMARK_LINE_COLOR, # Ensure this is in config
     EXPECTED_COLUMNS, APP_TITLE
 )
 
 import logging
-logger = logging.getLogger(APP_TITLE) # Get the main app logger
+logger = logging.getLogger(APP_TITLE)
 
 
 def _apply_custom_theme(fig: go.Figure, theme: str = 'dark') -> go.Figure:
-    """Applies custom theme settings to a Plotly figure."""
     plotly_theme_template = PLOTLY_THEME_DARK if theme == 'dark' else PLOTLY_THEME_LIGHT
     bg_color = PLOT_BG_COLOR_DARK if theme == 'dark' else PLOT_BG_COLOR_LIGHT
     paper_bg_color = PLOT_PAPER_BG_COLOR_DARK if theme == 'dark' else PLOT_PAPER_BG_COLOR_LIGHT
@@ -34,17 +33,13 @@ def _apply_custom_theme(fig: go.Figure, theme: str = 'dark') -> go.Figure:
 
     fig.update_layout(
         template=plotly_theme_template,
-        plot_bgcolor=bg_color,
-        paper_bgcolor=paper_bg_color,
-        font_color=font_color,
+        plot_bgcolor=bg_color, paper_bgcolor=paper_bg_color, font_color=font_color,
         margin=dict(l=50, r=50, t=60, b=50),
         xaxis=dict(showgrid=True, gridcolor=grid_color, zeroline=False),
         yaxis=dict(showgrid=True, gridcolor=grid_color, zeroline=False),
         hoverlabel=dict(
             bgcolor=COLORS.get('card_background_dark', '#273334') if theme == 'dark' else COLORS.get('card_background_light', '#F0F2F6'),
-            font_size=12,
-            font_family="Inter, sans-serif",
-            bordercolor=COLORS.get('royal_blue')
+            font_size=12, font_family="Inter, sans-serif", bordercolor=COLORS.get('royal_blue')
         )
     )
     return fig
@@ -53,47 +48,101 @@ def plot_equity_curve_and_drawdown(
     df: pd.DataFrame,
     date_col: str = EXPECTED_COLUMNS['date'],
     cumulative_pnl_col: str = 'cumulative_pnl',
-    drawdown_pct_col: Optional[str] = 'drawdown_pct',
+    drawdown_pct_col: Optional[str] = 'drawdown_pct', # This column should now exist from data_processing.py
     theme: str = 'dark'
 ) -> Optional[go.Figure]:
     if df is None or df.empty or date_col not in df.columns or cumulative_pnl_col not in df.columns:
-        logger.warning("Equity curve plot: Data is insufficient.")
+        logger.warning("Equity curve plot: Data is insufficient (df empty, or date/cumulative_pnl_col missing).")
         return None
-    if drawdown_pct_col and drawdown_pct_col not in df.columns:
-        logger.warning(f"Drawdown column '{drawdown_pct_col}' not found. Plotting equity curve only.")
-        drawdown_pct_col = None
+    
+    # Check if drawdown_pct_col exists and has data; if not, plot only equity.
+    has_drawdown_data = False
+    if drawdown_pct_col and drawdown_pct_col in df.columns and not df[drawdown_pct_col].dropna().empty:
+        has_drawdown_data = True
+    elif drawdown_pct_col: # Column name provided but no data or not in df
+        logger.warning(f"Drawdown column '{drawdown_pct_col}' not found or empty. Plotting equity curve only.")
 
-    fig_rows = 2 if drawdown_pct_col else 1
-    row_heights = [0.7, 0.3] if drawdown_pct_col else [1.0]
-    subplot_titles = ("Equity Curve", "Drawdown (%)" if drawdown_pct_col else None)
+    fig_rows = 2 if has_drawdown_data else 1
+    row_heights = [0.7, 0.3] if has_drawdown_data else [1.0]
+    subplot_titles = ("Equity Curve", "Drawdown (%)" if has_drawdown_data else None)
 
     fig = make_subplots(
         rows=fig_rows, cols=1, shared_xaxes=True,
         vertical_spacing=0.05,
         row_heights=row_heights,
-        subplot_titles=[s for s in subplot_titles if s]
+        subplot_titles=[s for s in subplot_titles if s] # Filter out None if no drawdown
     )
 
     fig.add_trace(
-        go.Scatter(x=df[date_col], y=df[cumulative_pnl_col], mode='lines', name='Equity Curve', line=dict(color=PLOT_LINE_COLOR, width=2)),
+        go.Scatter(x=df[date_col], y=df[cumulative_pnl_col], mode='lines', name='Strategy Equity', line=dict(color=PLOT_LINE_COLOR, width=2)),
         row=1, col=1
     )
+    fig.update_yaxes(title_text="Cumulative PnL ($)", row=1, col=1)
 
-    if drawdown_pct_col:
+
+    if has_drawdown_data:
         fig.add_trace(
-            go.Scatter(x=df[date_col], y=df[drawdown_pct_col], mode='lines', name='Drawdown (%)', line=dict(color=COLORS.get('red', '#FF0000'), width=1.5), fill='tozeroy', fillcolor='rgba(255,0,0,0.2)'),
+            go.Scatter(x=df[date_col], y=df[drawdown_pct_col], mode='lines', name='Drawdown', line=dict(color=COLORS.get('red', '#FF0000'), width=1.5), fill='tozeroy', fillcolor='rgba(255,0,0,0.2)'),
             row=2, col=1
         )
         fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1, tickformat=".2f")
-        min_dd, max_dd = df[drawdown_pct_col].min(), df[drawdown_pct_col].max()
-        if pd.isna(min_dd) or pd.isna(max_dd) or (min_dd == 0 and max_dd == 0) :
-             fig.update_yaxes(range=[-1, 1], row=2, col=1) # Default range if no drawdown or NaN
+        min_dd_val = df[drawdown_pct_col].min() 
+        max_dd_val = df[drawdown_pct_col].max() 
+        if pd.isna(min_dd_val) or pd.isna(max_dd_val) or (min_dd_val == 0 and max_dd_val == 0) :
+             fig.update_yaxes(range=[-1, 1], row=2, col=1) 
 
-    fig.update_layout(title_text='Equity Performance and Drawdown', hovermode='x unified')
-    fig.update_yaxes(title_text="Cumulative PnL", row=1, col=1)
+    fig.update_layout(title_text='Strategy Equity and Drawdown', hovermode='x unified')
     return _apply_custom_theme(fig, theme)
 
 
+def plot_equity_vs_benchmark(
+    strategy_equity: pd.Series, # Datetime indexed cumulative PnL or normalized equity
+    benchmark_cumulative_returns: pd.Series, # Datetime indexed cumulative % returns, or normalized equity
+    strategy_name: str = "Strategy",
+    benchmark_name: str = "Benchmark",
+    theme: str = 'dark'
+) -> Optional[go.Figure]:
+    """
+    Plots the strategy's equity curve against the benchmark's cumulative performance.
+    Assumes both series are datetime indexed and cover roughly the same period.
+    It's best if both are normalized to start at the same point (e.g., 100 or 0% return).
+    """
+    if strategy_equity.empty and benchmark_cumulative_returns.empty:
+        logger.warning("Equity vs Benchmark plot: Both strategy and benchmark series are empty.")
+        return None
+
+    fig = go.Figure()
+
+    # Plot Strategy Equity
+    if not strategy_equity.empty:
+        fig.add_trace(go.Scatter(
+            x=strategy_equity.index,
+            y=strategy_equity,
+            mode='lines',
+            name=strategy_name,
+            line=dict(color=PLOT_LINE_COLOR, width=2)
+        ))
+    
+    # Plot Benchmark Cumulative Returns
+    if not benchmark_cumulative_returns.empty:
+        fig.add_trace(go.Scatter(
+            x=benchmark_cumulative_returns.index,
+            y=benchmark_cumulative_returns,
+            mode='lines',
+            name=benchmark_name,
+            line=dict(color=PLOT_BENCHMARK_LINE_COLOR, width=2, dash='dash') # Use benchmark color
+        ))
+
+    fig.update_layout(
+        title_text=f'{strategy_name} vs. {benchmark_name} Performance',
+        xaxis_title="Date",
+        yaxis_title="Normalized Value / Cumulative Return (%)", # Adjust if not normalized
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return _apply_custom_theme(fig, theme)
+
+# ... (rest of existing plotting functions: plot_pnl_distribution, etc.) ...
 def plot_pnl_distribution(
     df: pd.DataFrame, pnl_col: str = EXPECTED_COLUMNS['pnl'],
     title: str = "PnL Distribution (per Trade)", theme: str = 'dark'
@@ -112,10 +161,10 @@ def plot_time_series_decomposition(
         logger.warning("Time series decomposition plot: No decomposition result provided.")
         return None
     try:
-        observed = getattr(decomposition_result, 'observed', pd.Series())
-        trend = getattr(decomposition_result, 'trend', pd.Series())
-        seasonal = getattr(decomposition_result, 'seasonal', pd.Series())
-        resid = getattr(decomposition_result, 'resid', pd.Series())
+        observed = getattr(decomposition_result, 'observed', pd.Series(dtype=float)) 
+        trend = getattr(decomposition_result, 'trend', pd.Series(dtype=float))
+        seasonal = getattr(decomposition_result, 'seasonal', pd.Series(dtype=float))
+        resid = getattr(decomposition_result, 'resid', pd.Series(dtype=float))
         
         if observed.empty:
             logger.warning("Time series decomposition plot: Observed series is empty.")
@@ -221,49 +270,32 @@ def plot_bootstrap_distribution_and_ci(
     statistic_name: str,
     theme: str = 'dark'
 ) -> Optional[go.Figure]:
-    """
-    Plots the distribution of bootstrap statistics with observed value and CIs.
-    """
     if not bootstrap_statistics:
         logger.warning(f"Bootstrap distribution plot for '{statistic_name}': No bootstrap statistics provided.")
         return None
+    if pd.isna(observed_statistic) or pd.isna(lower_bound) or pd.isna(upper_bound):
+        logger.warning(f"Bootstrap distribution plot for '{statistic_name}': Observed stat or CI bounds are NaN.")
+        return None
 
     fig = go.Figure()
-
-    # Histogram of bootstrap statistics
     fig.add_trace(go.Histogram(
-        x=bootstrap_statistics,
-        name='Bootstrap<br>Distribution',
-        marker_color=COLORS.get('royal_blue', '#4169E1'),
-        opacity=0.75,
-        histnorm='probability density' # Normalize for better comparison if ranges differ
+        x=bootstrap_statistics, name='Bootstrap<br>Distribution',
+        marker_color=COLORS.get('royal_blue', '#4169E1'), opacity=0.75, histnorm='probability density'
     ))
-
-    # Vertical line for observed statistic
     fig.add_vline(
-        x=observed_statistic, line_width=2, line_dash="dash",
-        line_color=COLORS.get('green', '#00FF00'),
+        x=observed_statistic, line_width=2, line_dash="dash", line_color=COLORS.get('green', '#00FF00'),
         name=f'Observed<br>{statistic_name}<br>({observed_statistic:.4f})'
     )
-
-    # Vertical lines for CI bounds
     fig.add_vline(
-        x=lower_bound, line_width=2, line_dash="dot",
-        line_color=COLORS.get('orange', '#FFA500'),
+        x=lower_bound, line_width=2, line_dash="dot", line_color=COLORS.get('orange', '#FFA500'),
         name=f'Lower 95% CI<br>({lower_bound:.4f})'
     )
     fig.add_vline(
-        x=upper_bound, line_width=2, line_dash="dot",
-        line_color=COLORS.get('orange', '#FFA500'),
+        x=upper_bound, line_width=2, line_dash="dot", line_color=COLORS.get('orange', '#FFA500'),
         name=f'Upper 95% CI<br>({upper_bound:.4f})'
     )
-    
     fig.update_layout(
-        title_text=f'Bootstrap Distribution for {statistic_name}',
-        xaxis_title=statistic_name,
-        yaxis_title='Density',
-        bargap=0.1,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        title_text=f'Bootstrap Distribution for {statistic_name}', xaxis_title=statistic_name, yaxis_title='Density',
+        bargap=0.1, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     return _apply_custom_theme(fig, theme)
