@@ -15,7 +15,6 @@ try:
     from utils.common_utils import load_css, display_custom_message
 except ImportError as e:
     st.error(f"Fatal Error: Could not import utility modules. App cannot start. Details: {e}")
-    # Basic logging if main logger setup fails
     logging.basicConfig(level=logging.ERROR)
     logging.error(f"Fatal Error importing utils: {e}", exc_info=True)
     st.stop()
@@ -41,23 +40,18 @@ except ImportError as e:
 try:
     from config import (
         APP_TITLE, EXPECTED_COLUMNS, RISK_FREE_RATE,
-        LOG_FILE, LOG_LEVEL, LOG_FORMAT, DEFAULT_BENCHMARK_TICKER # Added DEFAULT_BENCHMARK_TICKER
+        LOG_FILE, LOG_LEVEL, LOG_FORMAT, DEFAULT_BENCHMARK_TICKER, AVAILABLE_BENCHMARKS # Added AVAILABLE_BENCHMARKS
     )
 except ImportError as e:
     st.error(f"Fatal Error: Could not import configuration. App cannot start. Details: {e}")
     logging.error(f"Fatal Error importing config: {e}", exc_info=True)
-    # Define fallbacks for essential config items if import fails, to allow logger setup
     APP_TITLE = "TradingDashboard_Error"
-    LOG_FILE = "logs/error_app.log"
-    LOG_LEVEL = "ERROR"
-    LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    RISK_FREE_RATE = 0.02
-    EXPECTED_COLUMNS = {"date": "date", "pnl": "pnl"}
-    DEFAULT_BENCHMARK_TICKER = "SPY"
-    # st.stop() # Don't stop here, allow logger to be set up for further error reporting
+    LOG_FILE = "logs/error_app.log"; LOG_LEVEL = "ERROR"; LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    RISK_FREE_RATE = 0.02; EXPECTED_COLUMNS = {"date": "date", "pnl": "pnl"}; DEFAULT_BENCHMARK_TICKER = "SPY"
+    AVAILABLE_BENCHMARKS = {"S&P 500 (SPY)": "SPY", "None": ""}
+
 
 # --- Initialize Centralized Logger ---
-# This must happen after config constants for logging are potentially defined/fallback.
 logger = setup_logger(
     logger_name=APP_TITLE, log_file=LOG_FILE, level=LOG_LEVEL, log_format=LOG_FORMAT
 )
@@ -68,12 +62,12 @@ logger.debug(f"CWD at app start: {os.getcwd()}, sys.path: {sys.path}")
 # --- Page Configuration (Global for all pages) ---
 st.set_page_config(
     page_title=APP_TITLE,
-    page_icon="📈", # Changed to a more generic chart icon
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'Get Help': 'https://github.com/your-repo/trading-dashboard-tmh', # Replace with your repo
-        'Report a bug': "https://github.com/your-repo/trading-dashboard-tmh/issues", # Replace
+        'Get Help': 'https://github.com/your-repo/trading-dashboard-tmh', 
+        'Report a bug': "https://github.com/your-repo/trading-dashboard-tmh/issues", 
         'About': f"## {APP_TITLE}\n\nA comprehensive dashboard for trading performance analysis."
     }
 )
@@ -81,34 +75,30 @@ logger.debug("Streamlit page_config set.")
 
 # --- Load Custom CSS ---
 try:
-    load_css("style.css") # Assuming style.css is in the root directory
+    load_css("style.css") 
     logger.debug("Custom CSS loaded.")
 except Exception as e:
     logger.error(f"Failed to load style.css: {e}", exc_info=True)
     st.warning("Could not load custom styles. The app may not appear as intended.")
 
 # --- Initialize Session State ---
-# Define default values for session state keys
 default_session_state = {
-    'app_initialized': True,
-    'processed_data': None,
-    'filtered_data': None,
-    'kpi_results': None,
-    'kpi_confidence_intervals': {},
-    'risk_free_rate': RISK_FREE_RATE, # From config.py
-    'current_theme': "dark", # Default theme
-    'uploaded_file_name': None,
-    'last_processed_file_id': None, # To track if the same file is re-uploaded
-    'last_filtered_data_shape': None, # To track if filtered data has changed
-    'sidebar_filters': None, # Stores the dictionary of filter values from SidebarManager
-    'active_tab': "📈 Overview", # Example for main page tab state if needed
-    'selected_benchmark_ticker': DEFAULT_BENCHMARK_TICKER, # Initialize with default
-    'selected_benchmark_display_name': "S&P 500 (SPY)", # Default display name
-    'benchmark_daily_returns': None, # Stores pd.Series of benchmark returns
-    'initial_capital': 100000.0 # Default initial capital
+    'app_initialized': True, 'processed_data': None, 'filtered_data': None,
+    'kpi_results': None, 'kpi_confidence_intervals': {},
+    'risk_free_rate': RISK_FREE_RATE, 'current_theme': "dark",
+    'uploaded_file_name': None, 'last_processed_file_id': None,
+    'last_filtered_data_shape': None, 'sidebar_filters': None,
+    'active_tab': "📈 Overview",
+    'selected_benchmark_ticker': DEFAULT_BENCHMARK_TICKER,
+    'selected_benchmark_display_name': next((name for name, ticker_val in AVAILABLE_BENCHMARKS.items() if ticker_val == DEFAULT_BENCHMARK_TICKER), "None"),
+    'benchmark_daily_returns': None,
+    'initial_capital': 100000.0,
+    'last_applied_filters': None, # To track if filters changed
+    'last_fetched_benchmark_ticker': None, # To track if benchmark ticker changed
+    'last_benchmark_data_filter_shape': None, # To track if data range for benchmark changed
+    'last_kpi_calc_state_id': None # To track overall state for KPI recalc
 }
 
-# Initialize session state if keys don't exist
 for key, value in default_session_state.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -125,48 +115,45 @@ logger.debug("DataService and AnalysisService instantiated.")
 st.sidebar.title(f"📊 {APP_TITLE} Controls")
 st.sidebar.markdown("---")
 
-# File Uploader
 uploaded_file = st.sidebar.file_uploader(
     "Upload Trading Journal (CSV)", type=["csv"],
     help=f"Expected columns include: {', '.join(EXPECTED_COLUMNS.values())}",
-    key="app_wide_file_uploader" # Unique key for the widget
+    key="app_wide_file_uploader"
 )
 
-# Instantiate SidebarManager with current processed_data (can be None initially)
-# SidebarManager will now also handle benchmark selection and initial capital
 sidebar_manager = SidebarManager(st.session_state.processed_data)
-current_sidebar_filters = sidebar_manager.render_sidebar_controls() # This call renders the sidebar
+current_sidebar_filters = sidebar_manager.render_sidebar_controls() 
 
-# Store the returned filter values (including benchmark and initial capital)
 st.session_state.sidebar_filters = current_sidebar_filters
 
-# Update session state for RFR, benchmark, and initial capital if changed in sidebar
+# Update session state from sidebar if changes occurred
 if current_sidebar_filters:
-    if st.session_state.risk_free_rate != current_sidebar_filters.get('risk_free_rate', RISK_FREE_RATE):
-        st.session_state.risk_free_rate = current_sidebar_filters.get('risk_free_rate', RISK_FREE_RATE)
+    rfr_from_sidebar = current_sidebar_filters.get('risk_free_rate', RISK_FREE_RATE)
+    if st.session_state.risk_free_rate != rfr_from_sidebar:
+        st.session_state.risk_free_rate = rfr_from_sidebar
         logger.info(f"Global risk-free rate updated to: {st.session_state.risk_free_rate:.4f}")
-        st.session_state.kpi_results = None # Force KPI recalculation
+        st.session_state.kpi_results = None 
 
-    if st.session_state.selected_benchmark_ticker != current_sidebar_filters.get('selected_benchmark_ticker', ""):
-        st.session_state.selected_benchmark_ticker = current_sidebar_filters.get('selected_benchmark_ticker', "")
-        # Find display name from config for consistency if needed by other parts of app
+    benchmark_ticker_from_sidebar = current_sidebar_filters.get('selected_benchmark_ticker', "")
+    if st.session_state.selected_benchmark_ticker != benchmark_ticker_from_sidebar:
+        st.session_state.selected_benchmark_ticker = benchmark_ticker_from_sidebar
         st.session_state.selected_benchmark_display_name = next(
-            (name for name, ticker in default_session_state.get('AVAILABLE_BENCHMARKS', {}).items() 
+            (name for name, ticker in AVAILABLE_BENCHMARKS.items() 
              if ticker == st.session_state.selected_benchmark_ticker), "None"
         )
         logger.info(f"Benchmark ticker updated to: {st.session_state.selected_benchmark_ticker}")
-        st.session_state.benchmark_daily_returns = None # Force refetch
-        st.session_state.kpi_results = None # Force KPI recalculation
+        st.session_state.benchmark_daily_returns = None 
+        st.session_state.kpi_results = None 
 
-    if st.session_state.initial_capital != current_sidebar_filters.get('initial_capital', 100000.0):
-        st.session_state.initial_capital = current_sidebar_filters.get('initial_capital', 100000.0)
+    initial_capital_from_sidebar = current_sidebar_filters.get('initial_capital', 100000.0)
+    if st.session_state.initial_capital != initial_capital_from_sidebar:
+        st.session_state.initial_capital = initial_capital_from_sidebar
         logger.info(f"Initial capital updated to: {st.session_state.initial_capital:.2f}")
-        st.session_state.kpi_results = None # Force KPI recalculation if PnL is absolute
+        st.session_state.kpi_results = None 
 
 
 # --- Data Loading and Processing ---
 if uploaded_file is not None:
-    # Create a unique ID for the current file to avoid reprocessing if it hasn't changed
     current_file_id = f"{uploaded_file.name}-{uploaded_file.size}-{uploaded_file.type}"
     if st.session_state.last_processed_file_id != current_file_id or st.session_state.processed_data is None:
         logger.info(f"File '{uploaded_file.name}' (ID: {current_file_id}) selected. Initiating processing.")
@@ -175,21 +162,17 @@ if uploaded_file is not None:
         
         st.session_state.uploaded_file_name = uploaded_file.name
         st.session_state.last_processed_file_id = current_file_id
-        # Reset dependent states on new file upload
         st.session_state.kpi_results = None
         st.session_state.kpi_confidence_intervals = {}
-        st.session_state.filtered_data = st.session_state.processed_data # Initially, filtered is same as processed
-        st.session_state.benchmark_daily_returns = None # Reset benchmark data on new file
+        st.session_state.filtered_data = st.session_state.processed_data
+        st.session_state.benchmark_daily_returns = None 
 
         if st.session_state.processed_data is not None:
             logger.info(f"DataService processed '{uploaded_file.name}'. Shape: {st.session_state.processed_data.shape}")
             display_custom_message(f"Successfully processed '{uploaded_file.name}'. Navigate pages to see analysis.", "success", icon="✅")
-            # Update sidebar manager with new data if it affects filter options (e.g., date range)
-            # This might require re-rendering sidebar if options change dynamically, or handle in SidebarManager
         else:
             logger.error(f"DataService failed to process file: {uploaded_file.name}.")
             display_custom_message(f"Failed to process '{uploaded_file.name}'. Check logs and file format.", "error")
-            # Clear potentially problematic states
             st.session_state.processed_data = None 
             st.session_state.filtered_data = None
             st.session_state.kpi_results = None
@@ -197,46 +180,53 @@ if uploaded_file is not None:
             st.session_state.benchmark_daily_returns = None
 
 
-# --- Data Filtering (Applied after data is processed or filters change) ---
+# --- Data Filtering ---
 if st.session_state.processed_data is not None and st.session_state.sidebar_filters:
-    # Check if filters have changed or if filtered_data is not yet set
     if st.session_state.filtered_data is None or \
-       st.session_state.get('last_applied_filters') != st.session_state.sidebar_filters:
+       st.session_state.last_applied_filters != st.session_state.sidebar_filters:
         
         logger.info("Applying global filters via DataService...")
         st.session_state.filtered_data = data_service.filter_data(
             st.session_state.processed_data,
-            st.session_state.sidebar_filters, # Pass the full filter dict
-            column_map=EXPECTED_COLUMNS # Ensure DataService uses the correct column map
+            st.session_state.sidebar_filters,
+            column_map=EXPECTED_COLUMNS
         )
-        st.session_state.last_applied_filters = st.session_state.sidebar_filters.copy() # Store applied filters
+        st.session_state.last_applied_filters = st.session_state.sidebar_filters.copy()
         logger.debug(f"Data filtered. New shape: {st.session_state.filtered_data.shape if st.session_state.filtered_data is not None else 'None'}")
-        # Reset KPIs and benchmark data as filtered data has changed
         st.session_state.kpi_results = None
         st.session_state.kpi_confidence_intervals = {}
-        st.session_state.benchmark_daily_returns = None # Force refetch if benchmark is selected
+        st.session_state.benchmark_daily_returns = None
 
 
-# --- Benchmark Data Fetching (Applied after data is filtered or benchmark selection changes) ---
+# --- Benchmark Data Fetching ---
 if st.session_state.filtered_data is not None and not st.session_state.filtered_data.empty:
     selected_ticker = st.session_state.get('selected_benchmark_ticker')
-    if selected_ticker and selected_ticker != "": # A benchmark is selected
-        # Check if benchmark data needs to be fetched/refetched
-        # This condition ensures fetching only if ticker changes or data is not yet loaded
-        # or if filtered_data (which defines date range) has changed.
-        if st.session_state.benchmark_daily_returns is None or \
-           st.session_state.get('last_fetched_benchmark_ticker') != selected_ticker or \
-           st.session_state.get('last_benchmark_data_filter_shape') != st.session_state.filtered_data.shape:
+    if selected_ticker and selected_ticker != "": 
+        # Determine if refetch is needed
+        refetch_benchmark = False
+        if st.session_state.benchmark_daily_returns is None:
+            refetch_benchmark = True
+        elif st.session_state.last_fetched_benchmark_ticker != selected_ticker:
+            refetch_benchmark = True
+        elif st.session_state.last_benchmark_data_filter_shape != st.session_state.filtered_data.shape:
+             # Date range might have changed due to filtering
+            refetch_benchmark = True
 
+        if refetch_benchmark:
             date_col_name = EXPECTED_COLUMNS.get('date')
             if date_col_name and date_col_name in st.session_state.filtered_data.columns:
-                min_date = st.session_state.filtered_data[date_col_name].min()
-                max_date = st.session_state.filtered_data[date_col_name].max()
+                # Convert to pd.Timestamp first for robust min/max, then to datetime.date for caching
+                min_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).min()
+                max_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).max()
                 
-                if pd.notna(min_date) and pd.notna(max_date):
-                    logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date} to {max_date}.")
+                # Convert to datetime.date for passing to cached function
+                min_date_for_cache = min_date_ts.date() if pd.notna(min_date_ts) else None
+                max_date_for_cache = max_date_ts.date() if pd.notna(max_date_ts) else None
+                
+                if min_date_for_cache and max_date_for_cache:
+                    logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date_for_cache} to {max_date_for_cache}.")
                     st.session_state.benchmark_daily_returns = analysis_service.get_benchmark_data(
-                        selected_ticker, min_date, max_date
+                        selected_ticker, min_date_for_cache, max_date_for_cache # Pass datetime.date objects
                     )
                     st.session_state.last_fetched_benchmark_ticker = selected_ticker
                     st.session_state.last_benchmark_data_filter_shape = st.session_state.filtered_data.shape
@@ -246,39 +236,33 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                     else:
                         logger.info(f"Benchmark data for {selected_ticker} fetched successfully.")
                 else:
-                    logger.warning("Min/max dates from filtered_data are NaT, cannot fetch benchmark data.")
-                    st.session_state.benchmark_daily_returns = None # Ensure it's None
+                    logger.warning("Min/max dates from filtered_data are NaT or invalid, cannot fetch benchmark data.")
+                    st.session_state.benchmark_daily_returns = None
             else:
                 logger.warning(f"Date column '{date_col_name}' not found in filtered_data for benchmark date range.")
                 st.session_state.benchmark_daily_returns = None
-            st.session_state.kpi_results = None # Force KPI recalculation after benchmark fetch attempt
-    elif st.session_state.benchmark_daily_returns is not None : # If benchmark was "None" or deselected
+            st.session_state.kpi_results = None 
+    elif st.session_state.benchmark_daily_returns is not None : 
         logger.info("No benchmark selected or deselected. Clearing benchmark data.")
         st.session_state.benchmark_daily_returns = None
-        st.session_state.kpi_results = None # Force KPI recalculation
+        st.session_state.kpi_results = None 
 
 
-# --- KPI Calculation (Applied if filtered data exists and KPIs are not yet calculated for current state) ---
+# --- KPI Calculation ---
 if st.session_state.filtered_data is not None and not st.session_state.filtered_data.empty:
-    # Check if KPIs need recalculation
-    # This happens if: kpi_results is None, or relevant inputs (RFR, benchmark, initial_capital, filtered_data shape) changed
-    
-    # Construct a unique ID for the current state affecting KPIs
     current_kpi_calc_state_id = (
         st.session_state.filtered_data.shape,
         st.session_state.risk_free_rate,
         st.session_state.initial_capital,
-        st.session_state.selected_benchmark_ticker, # Ticker itself
-        # Hash of benchmark data if it exists, to detect changes in actual benchmark values
-        pd.util.hash_pandas_object(st.session_state.benchmark_daily_returns, index=True).sum() if st.session_state.benchmark_daily_returns is not None else None
+        st.session_state.selected_benchmark_ticker,
+        pd.util.hash_pandas_object(st.session_state.benchmark_daily_returns, index=True).sum() if st.session_state.benchmark_daily_returns is not None and not st.session_state.benchmark_daily_returns.empty else None
     )
 
     if st.session_state.kpi_results is None or \
-       st.session_state.get('last_kpi_calc_state_id') != current_kpi_calc_state_id:
+       st.session_state.last_kpi_calc_state_id != current_kpi_calc_state_id:
         
         logger.info("Recalculating global KPIs and CIs via AnalysisService...")
         with st.spinner("Calculating performance metrics & CIs..."):
-            # Pass benchmark returns and initial capital to the service
             kpi_service_result = analysis_service.get_core_kpis(
                 st.session_state.filtered_data,
                 st.session_state.risk_free_rate,
@@ -288,13 +272,12 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
             
             if kpi_service_result and 'error' not in kpi_service_result:
                 st.session_state.kpi_results = kpi_service_result
-                st.session_state.last_kpi_calc_state_id = current_kpi_calc_state_id # Store the state ID
+                st.session_state.last_kpi_calc_state_id = current_kpi_calc_state_id
                 logger.info("Global KPIs calculated.")
 
-                # Bootstrap CIs (consider if these also need benchmark context, currently they don't)
                 ci_service_result = analysis_service.get_bootstrapped_kpi_cis(
                     st.session_state.filtered_data,
-                    kpis_to_bootstrap=['avg_trade_pnl', 'win_rate', 'sharpe_ratio'] # Add more if needed
+                    kpis_to_bootstrap=['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
                 )
                 if ci_service_result and 'error' not in ci_service_result:
                     st.session_state.kpi_confidence_intervals = ci_service_result
@@ -302,14 +285,13 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                 else:
                     error_msg_ci = ci_service_result.get('error', 'Unknown error') if ci_service_result else "CI calculation failed"
                     display_custom_message(f"Warning: CIs calculation error: {error_msg_ci}", "warning")
-                    st.session_state.kpi_confidence_intervals = {} # Reset on error
+                    st.session_state.kpi_confidence_intervals = {}
             else:
                 error_msg_kpi = kpi_service_result.get('error', 'Unknown error') if kpi_service_result else "KPI calculation failed"
                 display_custom_message(f"Error calculating KPIs: {error_msg_kpi}", "error")
-                st.session_state.kpi_results = None # Reset on error
+                st.session_state.kpi_results = None
                 st.session_state.kpi_confidence_intervals = {}
 elif st.session_state.filtered_data is not None and st.session_state.filtered_data.empty:
-    # If filters result in no data, clear KPIs
     if st.session_state.processed_data is not None and not st.session_state.processed_data.empty:
         display_custom_message("No data matches current filters. Adjust filters or check data.", "info")
     st.session_state.kpi_results = None
@@ -318,20 +300,16 @@ elif st.session_state.filtered_data is not None and st.session_state.filtered_da
 
 # --- Initial Welcome Message or No Data Message ---
 if st.session_state.processed_data is None and not uploaded_file:
-    # This is the initial state before any upload
     st.markdown("### Welcome to the Trading Performance Dashboard!")
     st.markdown("Use the sidebar to upload your trading journal (CSV file) and select analysis options to get started.")
     logger.info("Displaying welcome message as no data is loaded.")
 elif st.session_state.processed_data is not None and \
      (st.session_state.filtered_data is None or st.session_state.filtered_data.empty) and \
      not (st.session_state.kpi_results and 'error' not in st.session_state.kpi_results):
-     # This case handles when data is uploaded but filters make it empty
-     if st.session_state.sidebar_filters and uploaded_file: # Only show if filters are active after an upload
+     if st.session_state.sidebar_filters and uploaded_file:
         display_custom_message(
             "No data matches the current filter selection. Please adjust your filters in the sidebar or verify the uploaded data content.", 
             "info"
         )
 
 logger.info(f"Application '{APP_TITLE}' main script execution finished for this run cycle.")
-# Streamlit automatically routes to pages in the pages/ directory.
-# The first page alphabetically (e.g., 0_❓_User_Guide.py or 1_📈_Overview.py) will be shown by default.
