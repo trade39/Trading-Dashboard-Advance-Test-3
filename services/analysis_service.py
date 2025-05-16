@@ -2,8 +2,7 @@
 services/analysis_service.py
 
 Orchestrates analytical calculations and model executions.
-Includes a standalone function for fetching benchmark data,
-with yfinance call isolated for caching robustness.
+Includes a standalone function for fetching benchmark data.
 """
 import streamlit as st
 import pandas as pd
@@ -38,74 +37,55 @@ except ImportError as e:
     def calculate_all_kpis(df, rfr, benchmark_daily_returns=None, initial_capital=None): return {"error": "calc_kpis not loaded"}
     def bootstrap_confidence_interval(d, _sf, **kw): return {"error": "bootstrap_ci not loaded", "lb":np.nan, "ub":np.nan, "bootstrap_statistics": []}
     def survival_analysis_kaplan_meier(*args, **kwargs): return {"error": "survival_analysis_kaplan_meier not loaded"}
-
+    def decompose_time_series(*args, **kwargs): return None # Fallback
 
 import logging
 logger = logging.getLogger(APP_TITLE)
 
-# --- Non-cached helper for yfinance download ---
-def _fetch_yf_data(ticker: str, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> Optional[pd.DataFrame]:
-    """
-    Internal helper to fetch data using yfinance. Not cached itself.
-    """
-    logger_fetch = logging.getLogger(f"{APP_TITLE}._fetch_yf_data")
-    try:
-        logger_fetch.info(f"Fetching yfinance data for {ticker} from {start_dt.date()} to {end_dt.date()}")
-        # yfinance end_date is inclusive for daily data. Add 1 day to ensure end_dt is included.
-        data = yf.download(ticker, start=start_dt, end=end_dt + pd.Timedelta(days=1), progress=False, auto_adjust=True, actions=False)
-        if data.empty:
-            logger_fetch.warning(f"yf.download returned empty DataFrame for {ticker}.")
-            return None
-        return data
-    except Exception as e:
-        logger_fetch.error(f"Exception in _fetch_yf_data for {ticker}: {e}", exc_info=True)
-        return None
-
-# --- Standalone Cached Function for Benchmark Data ---
-@st.cache_data(ttl=3600, show_spinner="Fetching benchmark data...") 
+@st.cache_data(ttl=3600) 
 def get_benchmark_data_static(
     ticker: str, 
     start_date_str: str, 
     end_date_str: str
 ) -> Optional[pd.Series]:
     logger_static_func = logging.getLogger(f"{APP_TITLE}.get_benchmark_data_static")
-    logger_static_func.info(f"get_benchmark_data_static called for {ticker} ({start_date_str} to {end_date_str})")
+    logger_static_func.info(f"Executing get_benchmark_data_static (caching active) for {ticker} from {start_date_str} to {end_date_str}")
 
     if not ticker:
         logger_static_func.info("No benchmark ticker provided. Skipping data fetch.")
         return None
     try:
-        # Ensure arguments are plain strings for hashing robustness
-        plain_ticker = str(ticker)
-        plain_start_date_str = str(start_date_str)
-        plain_end_date_str = str(end_date_str)
-
-        start_dt = pd.to_datetime(plain_start_date_str)
-        end_dt = pd.to_datetime(plain_end_date_str)
+        logger_static_func.debug("Attempting to convert date strings to datetime objects...")
+        start_dt = pd.to_datetime(start_date_str)
+        end_dt = pd.to_datetime(end_date_str)
+        logger_static_func.debug(f"Converted dates: start_dt={start_dt}, end_dt={end_dt}")
 
         if start_dt >= end_dt:
-            logger_static_func.warning(f"Benchmark start date {plain_start_date_str} is not before end date {plain_end_date_str}. Cannot fetch data.")
+            logger_static_func.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str}. Cannot fetch data.")
             return None
 
-        # Call the non-cached helper for the actual download
-        data = _fetch_yf_data(plain_ticker, start_dt, end_dt)
+        fetch_end_dt = end_dt + pd.Timedelta(days=1)
+        logger_static_func.info(f"Attempting yf.download for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()})")
         
-        if data is None or data.empty or 'Close' not in data.columns:
-            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {plain_ticker} in period {plain_start_date_str} - {plain_end_date_str}.")
+        data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False, auto_adjust=True, actions=False)
+        logger_static_func.debug(f"yf.download result for {ticker}:\n{data.head() if not data.empty else 'Empty DataFrame'}")
+        
+        if data.empty or 'Close' not in data.columns:
+            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str}.")
             return None
         
         daily_adj_close = data['Close'].dropna()
         if len(daily_adj_close) < 2:
-            logger_static_func.warning(f"Not enough benchmark data points for {plain_ticker} to calculate returns (<2).")
+            logger_static_func.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
             return None
             
         daily_returns = daily_adj_close.pct_change().dropna()
-        daily_returns.name = f"{plain_ticker}_returns"
+        daily_returns.name = f"{ticker}_returns"
         
-        logger_static_func.info(f"Successfully processed benchmark returns for {plain_ticker}. Shape: {daily_returns.shape}")
+        logger_static_func.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
         return daily_returns
     except Exception as e:
-        logger_static_func.error(f"Error processing benchmark data for {plain_ticker}: {e}", exc_info=True)
+        logger_static_func.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
         return None
 
 class AnalysisService:
@@ -116,6 +96,40 @@ class AnalysisService:
         if not PROPHET_AVAILABLE: self.logger.warning("Prophet unavailable in AnalysisService.")
         if not LIFELINES_AVAILABLE: self.logger.warning("Lifelines (survival analysis) unavailable in AnalysisService.")
 
+    def get_time_series_decomposition(self, series: pd.Series, model: str = 'additive', period: Optional[int] = None) -> Dict[str, Any]:
+        if series is None or series.dropna().empty: # Check after dropna
+            return {"error": "Input series for decomposition is empty or all NaN."}
+        
+        # Basic length check (can be refined in statistical_methods.py)
+        min_len_check = (2 * (period if period is not None and period > 1 else 2))
+        if len(series.dropna()) < min_len_check:
+            return {"error": f"Series too short (need at least {min_len_check} non-NaN points) for period {period}."}
+        
+        try: 
+            # decompose_time_series is imported from statistical_methods
+            result = decompose_time_series(series.dropna(), model=model, period=period)
+            
+            if result is not None:
+                # Check if all components are NaN, which can happen if decomposition fails internally for some reason
+                if (result.observed.isnull().all() and 
+                    result.trend.isnull().all() and 
+                    result.seasonal.isnull().all() and 
+                    result.resid.isnull().all()):
+                    logger.warning(f"TS Decomp for series (len {len(series.dropna())}, model {model}, period {period}) resulted in all NaN components.")
+                    return {"error": "Decomposition resulted in all NaN components. Series might be unsuitable (e.g., too noisy, no clear pattern, or too short for the chosen period)."}
+                return {"decomposition_result": result}
+            else:
+                # This case should ideally be caught by specific errors raised in decompose_time_series
+                logger.warning(f"Decomposition returned None for series (len {len(series.dropna())}, model {model}, period {period}). This indicates an issue within statsmodels.tsa.seasonal_decompose, possibly due to data characteristics not caught by prior checks.")
+                return {"error": "Decomposition failed. The series might be unsuitable for the chosen model/period (e.g. too short, too noisy, or contains values incompatible with the model like non-positives for multiplicative)."}
+        except ValueError as ve: # Catch specific ValueError from our check
+            self.logger.error(f"ValueError in TS decomp service call: {ve}", exc_info=False) # Log the specific error
+            return {"error": str(ve)} # Pass the specific error message to UI
+        except Exception as e: 
+            self.logger.error(f"Unexpected error in TS decomp service call: {e}", exc_info=True)
+            return {"error": f"An unexpected error occurred during decomposition: {str(e)}"}
+
+    # ... (rest of AnalysisService methods: get_core_kpis, perform_kaplan_meier_analysis, etc.)
     def get_core_kpis(
         self, 
         trades_df: pd.DataFrame, 
@@ -171,7 +185,6 @@ class AnalysisService:
             self.logger.error(f"Error during Kaplan-Meier analysis in service: {e}", exc_info=True)
             return {"error": str(e)}
             
-    # ... (rest of AnalysisService methods)
     def get_bootstrapped_kpi_cis(self, trades_df: pd.DataFrame, kpis_to_bootstrap: Optional[List[str]] = None) -> Dict[str, Any]:
         if trades_df is None or trades_df.empty: return {"error": "Input data for CI calculation is empty."}
         if kpis_to_bootstrap is None: kpis_to_bootstrap = ['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
@@ -230,15 +243,6 @@ class AnalysisService:
         except Exception as e:
             self.logger.error(f"Error in get_single_bootstrap_ci_visual_data: {e}", exc_info=True)
             return {"error": str(e)}
-
-    def get_time_series_decomposition(self, series: pd.Series, model: str = 'additive', period: Optional[int] = None) -> Dict[str, Any]:
-        if series is None or series.empty: return {"error": "Series is empty for decomposition."}
-        min_len = (2 * (period or 2)) + 1
-        if len(series.dropna()) < min_len : return {"error": f"Series too short (need {min_len} non-NaN points) for period {period}."}
-        try: 
-            result = decompose_time_series(series.dropna(), model=model, period=period)
-            return {"decomposition_result": result} if result is not None else {"error": "Decomposition returned None."}
-        except Exception as e: self.logger.error(f"Error in TS decomp: {e}", exc_info=True); return {"error": str(e)}
     
     def analyze_pnl_distribution_fit(self, pnl_series: pd.Series, distributions_to_try: Optional[List[str]] = None) -> Dict[str, Any]:
         if pnl_series is None or pnl_series.dropna().empty: return {"error": "PnL series is empty."}
@@ -323,4 +327,4 @@ class AnalysisService:
         pnl_col = EXPECTED_COLUMNS.get('pnl')
         if not pnl_col or pnl_col not in trades_df.columns: return None
         try: return plot_pnl_distribution(trades_df, pnl_col=pnl_col, title="PnL Distribution (per Trade)", theme=theme)
-        except Exception as e: self.logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return {"error": str(e)} # Return error as string
+        except Exception as e: self.logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return {"error": str(e)}
