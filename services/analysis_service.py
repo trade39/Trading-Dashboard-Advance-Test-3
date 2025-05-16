@@ -7,6 +7,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List, Union, Tuple, Callable
+import yfinance as yf # Import yfinance
+import datetime
 
 try:
     from config import APP_TITLE, RISK_FREE_RATE, EXPECTED_COLUMNS, FORECAST_HORIZON, CONFIDENCE_LEVEL, BOOTSTRAP_ITERATIONS
@@ -30,7 +32,7 @@ try:
 except ImportError as e:
     print(f"CRITICAL IMPORT ERROR in AnalysisService: {e}. Some functionalities may fail.")
     APP_TITLE = "TradingDashboard_ErrorState"; RISK_FREE_RATE = 0.02; EXPECTED_COLUMNS = {"pnl": "pnl", "date": "date"}; FORECAST_HORIZON = 30; PROPHET_AVAILABLE = False; PMDARIMA_AVAILABLE = False; LIFELINES_AVAILABLE = False; CONFIDENCE_LEVEL = 0.95; BOOTSTRAP_ITERATIONS = 1000
-    def calculate_all_kpis(df, rfr): return {"error": "calc_kpis not loaded"}
+    def calculate_all_kpis(df, rfr, benchmark_daily_returns=None, initial_capital=None): return {"error": "calc_kpis not loaded"} # Added benchmark_daily_returns
     def bootstrap_confidence_interval(d, _sf, **kw): return {"error": "bootstrap_ci not loaded", "lb":np.nan, "ub":np.nan, "bootstrap_statistics": []}
 
 
@@ -44,7 +46,66 @@ class AnalysisService:
         if not PROPHET_AVAILABLE: logger.warning("Prophet unavailable in AnalysisService.")
         if not LIFELINES_AVAILABLE: logger.warning("Lifelines (survival analysis) unavailable in AnalysisService.")
 
-    def get_core_kpis(self, trades_df: pd.DataFrame, risk_free_rate: Optional[float] = None) -> Dict[str, Any]:
+    @st.cache_data(ttl=3600, show_spinner="Fetching benchmark data...") # Cache for 1 hour
+    def get_benchmark_data(
+        self, 
+        ticker: str, 
+        start_date: Union[str, datetime.date, pd.Timestamp], 
+        end_date: Union[str, datetime.date, pd.Timestamp]
+    ) -> Optional[pd.Series]:
+        """
+        Fetches historical 'Adj Close' prices for a given ticker and calculates daily returns.
+
+        Args:
+            ticker (str): The stock ticker (e.g., "SPY").
+            start_date (Union[str, datetime.date, pd.Timestamp]): Start date for data fetching.
+            end_date (Union[str, datetime.date, pd.Timestamp]): End date for data fetching.
+                                                               (yfinance includes this date).
+
+        Returns:
+            Optional[pd.Series]: Daily percentage returns of the benchmark, or None if error.
+                                 Index is DatetimeIndex.
+        """
+        if not ticker:
+            logger.info("No benchmark ticker provided. Skipping data fetch.")
+            return None
+        try:
+            # yfinance expects end_date to be inclusive, but it's good to add a day 
+            # if you want data *up to and including* end_date from daily candles.
+            # However, for daily returns, we need T and T-1, so fetching up to end_date is usually fine.
+            # Let's ensure end_date is at least one day after start_date for pct_change.
+            if pd.to_datetime(start_date) >= pd.to_datetime(end_date):
+                logger.warning(f"Benchmark start date {start_date} is not before end date {end_date}. Cannot fetch data.")
+                return None
+
+            logger.info(f"Fetching benchmark data for {ticker} from {start_date} to {end_date}")
+            data = yf.download(ticker, start=start_date, end=pd.to_datetime(end_date) + pd.Timedelta(days=1), progress=False) # Add 1 day to ensure end_date is included
+            
+            if data.empty or 'Adj Close' not in data.columns:
+                logger.warning(f"No data or 'Adj Close' not found for benchmark {ticker} in period {start_date}-{end_date}.")
+                return None
+            
+            daily_adj_close = data['Adj Close'].dropna()
+            if len(daily_adj_close) < 2:
+                logger.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
+                return None
+                
+            daily_returns = daily_adj_close.pct_change().dropna() # Calculate daily % returns
+            daily_returns.name = f"{ticker}_returns"
+            
+            logger.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
+            return daily_returns
+        except Exception as e:
+            logger.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
+            return None
+
+    def get_core_kpis(
+        self, 
+        trades_df: pd.DataFrame, 
+        risk_free_rate: Optional[float] = None,
+        benchmark_daily_returns: Optional[pd.Series] = None, # New parameter
+        initial_capital: Optional[float] = None # New parameter
+    ) -> Dict[str, Any]:
         if trades_df is None or trades_df.empty: return {"error": "Input data for KPI calculation is empty."}
         rfr = risk_free_rate if risk_free_rate is not None else RISK_FREE_RATE
         try:
@@ -54,15 +115,19 @@ class AnalysisService:
             if trades_df[pnl_col_name].isnull().all():
                  return {"error": f"PnL column ('{pnl_col_name}') contains only NaN values. Cannot calculate KPIs."}
 
-            kpi_results = calculate_all_kpis(trades_df, risk_free_rate=rfr)
+            kpi_results = calculate_all_kpis(
+                trades_df, 
+                risk_free_rate=rfr,
+                benchmark_daily_returns=benchmark_daily_returns, # Pass to calculations
+                initial_capital=initial_capital # Pass to calculations
+            )
             if pd.isna(kpi_results.get('total_pnl')) and pd.isna(kpi_results.get('sharpe_ratio')):
                  logger.warning("Several critical KPIs are NaN. This might indicate issues with input PnL data.")
             return kpi_results
         except Exception as e: logger.error(f"Error calculating core KPIs: {e}", exc_info=True); return {"error": str(e)}
 
+    # ... (rest of AnalysisService methods remain unchanged for this phase) ...
     def get_bootstrapped_kpi_cis(self, trades_df: pd.DataFrame, kpis_to_bootstrap: Optional[List[str]] = None) -> Dict[str, Any]:
-        # This method remains for fetching multiple CIs, primarily for the KPI cards.
-        # It returns only the bounds.
         if trades_df is None or trades_df.empty: return {"error": "Input data for CI calculation is empty."}
         if kpis_to_bootstrap is None: kpis_to_bootstrap = ['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
         
@@ -81,11 +146,15 @@ class AnalysisService:
             if kpi_key == 'avg_trade_pnl': stat_fn = np.mean
             elif kpi_key == 'win_rate': stat_fn = lambda x: (np.sum(x > 0) / len(x)) * 100 if len(x) > 0 else 0.0
             elif kpi_key == 'sharpe_ratio':
+                # Simplified Sharpe for bootstrapping (assumes RFR=0 for simplicity or uses daily returns)
+                # For a more accurate bootstrapped Sharpe, the RFR and annualization logic would need
+                # to be carefully handled within the statistic_func, potentially using daily returns from trades_df.
                 def simplified_sharpe_stat_fn(returns_sample: pd.Series) -> float:
                     if len(returns_sample) < 2: return 0.0
                     std_dev = returns_sample.std()
+                    # Handle case where std_dev is zero (e.g. all returns are same)
                     if std_dev == 0 or np.isnan(std_dev): return 0.0 if returns_sample.mean() <= 0 else np.inf
-                    return returns_sample.mean() / std_dev
+                    return returns_sample.mean() / std_dev # Non-annualized, per-period Sharpe
                 stat_fn = simplified_sharpe_stat_fn
             
             if stat_fn:
@@ -101,40 +170,36 @@ class AnalysisService:
         self,
         data_series: pd.Series,
         statistic_func: Callable[[pd.Series], float],
-        n_iterations: int = BOOTSTRAP_ITERATIONS, # Use from config
-        confidence_level: float = CONFIDENCE_LEVEL # Use from config
+        n_iterations: int = BOOTSTRAP_ITERATIONS,
+        confidence_level: float = CONFIDENCE_LEVEL
     ) -> Dict[str, Any]:
-        """
-        Performs bootstrap CI calculation and returns the full results dictionary
-        suitable for visualization, including the bootstrapped statistics.
-        """
         if data_series is None or data_series.dropna().empty:
             return {"error": "Input data series for bootstrapping is empty or all NaN."}
         if len(data_series.dropna()) < 2:
             return {"error": "Insufficient data points (need at least 2) for bootstrapping."}
         
         try:
-            # Call the core statistical method
             results = bootstrap_confidence_interval(
                 data=data_series.dropna(),
                 _statistic_func=statistic_func,
                 n_iterations=n_iterations,
                 confidence_level=confidence_level
             )
-            return results # Return the full dictionary
+            return results
         except Exception as e:
             logger.error(f"Error in get_single_bootstrap_ci_visual_data: {e}", exc_info=True)
             return {"error": str(e)}
 
     def get_time_series_decomposition(self, series: pd.Series, model: str = 'additive', period: Optional[int] = None) -> Dict[str, Any]:
         if series is None or series.empty: return {"error": "Series is empty for decomposition."}
-        min_len = (2 * (period or 2)) + 1
+        min_len = (2 * (period or 2)) + 1 # statsmodels default period is 2 if None
         if len(series.dropna()) < min_len : return {"error": f"Series too short (need {min_len} non-NaN points) for period {period}."}
         try: 
             result = decompose_time_series(series.dropna(), model=model, period=period)
-            return {"decomposition_result": result} if result is not None else {"error": "Decomposition returned None."}
+            return {"decomposition_result": result} if result is not None else {"error": "Decomposition returned None (possibly due to data issues or insufficient length after internal processing)."}
         except Exception as e: logger.error(f"Error in TS decomp: {e}", exc_info=True); return {"error": str(e)}
-
+    
+    # ... (other existing methods like analyze_pnl_distribution_fit, etc.)
     def analyze_pnl_distribution_fit(self, pnl_series: pd.Series, distributions_to_try: Optional[List[str]] = None) -> Dict[str, Any]:
         if pnl_series is None or pnl_series.dropna().empty: return {"error": "PnL series is empty."}
         try: return fit_distributions_to_pnl(pnl_series.dropna(), distributions_to_try=distributions_to_try)
