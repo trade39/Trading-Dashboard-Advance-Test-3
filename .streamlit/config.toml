@@ -1,0 +1,50 @@
+# .streamlit/config.toml
+
+# Default theme settings for the Streamlit application.
+# Users can still switch themes if the app provides a manual toggle,
+# but this sets the initial appearance.
+
+[theme]
+base="dark" # Options: "light", "dark"
+primaryColor="#4169E1" # Royal Blue - used for widgets, accents
+backgroundColor="#1C2526" # Main dark background
+secondaryBackgroundColor="#273334" # Background for sidebar, cards, etc.
+textColor="#E0E0E0" # Primary text color on dark background
+font="sans serif" # Options: "sans serif", "serif", "monospace"
+
+# You can also specify light theme colors here if you want Streamlit's built-in
+# theme toggle (if enabled in Streamlit settings) to use specific custom light colors.
+# Example for custom light theme (if base="light" or user switches):
+# [theme.light]
+# primaryColor = "#4169E1"
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#F0F2F6"
+# textColor = "#333333"
+
+[logger]
+# Level of logging: "error", "warning", "info", or "debug".
+# Default is "info".
+level = "info"
+
+[runner]
+# Allows to run Streamlit on a different port, headless, etc.
+# Default is fine for most cases.
+# serverPort = 8501
+
+[server]
+# Enables Cross-Origin Resource Sharing (CORS) protection.
+# Default is true. Set to false if you need to embed your app in an iframe
+# from a different domain and are having issues (understand security implications).
+enableCORS = true
+# enableXsrfProtection = true # Default is true, provides XSRF protection
+
+# Headless mode (useful for automated tests or running in environments without a display)
+# headless = false
+
+[global]
+# Disable writing a default .gitignore file for new projects
+# disableWriteOption = false
+
+# Data frame serialization: "arrow" or "legacy".
+# "arrow" is the default and generally more performant.
+# dataFrameSerialization = "arrow"
