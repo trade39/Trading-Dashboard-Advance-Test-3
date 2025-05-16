@@ -4,6 +4,7 @@ calculations.py
 Implements calculations for all specified Key Performance Indicators (KPIs)
 and provides functions for their qualitative interpretation and color-coding
 based on thresholds defined in config.py.
+Includes benchmark-relative metrics like Alpha and Beta.
 """
 import pandas as pd
 import numpy as np
@@ -11,12 +12,10 @@ from scipy import stats
 from typing import Dict, Any, Tuple, List, Optional
 import logging
 
-# Assuming config.py is in the root directory
 from config import RISK_FREE_RATE, KPI_CONFIG, COLORS, EXPECTED_COLUMNS
 
-# Placeholder for logger
-logger = logging.getLogger(__name__)
-if not logger.handlers:
+logger = logging.getLogger(EXPECTED_COLUMNS.get("APP_TITLE", "TradingDashboard_Calc")) # Use APP_TITLE from config if available
+if not logger.handlers: # Ensure basic handler if not configured by main app
     handler = logging.StreamHandler()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
@@ -27,87 +26,41 @@ def _calculate_returns(pnl_series: pd.Series, initial_capital: Optional[float] =
     """
     Calculates returns. If initial_capital is provided, calculates percentage returns.
     Otherwise, PnL values are treated as absolute returns for risk-adjusted metrics.
-    For Sharpe/Sortino, if PnL is already per-trade profit, it can be used directly.
     """
     if pnl_series.empty:
         return pd.Series(dtype=float)
     if initial_capital and initial_capital != 0:
-        # This assumes pnl_series are for individual periods and initial_capital is constant
-        # For a more accurate portfolio return, you'd need evolving capital values.
         return pnl_series / initial_capital
-    return pnl_series # Treat PnL as returns directly for ratio calculations if capital not specified
+    return pnl_series # Treat PnL as returns directly
 
 def _calculate_drawdowns(cumulative_pnl: pd.Series) -> Tuple[pd.Series, float, float, pd.Series]:
     """
     Calculates drawdown series, max drawdown value, and max drawdown percentage.
-    Args:
-        cumulative_pnl (pd.Series): Series of cumulative PnL.
-    Returns:
-        Tuple[pd.Series, float, float, pd.Series]:
-            - drawdown_series (absolute drawdown from peak)
-            - max_drawdown_abs (maximum absolute drawdown value)
-            - max_drawdown_pct (maximum drawdown as percentage of peak equity)
-            - drawdown_pct_series (drawdown as percentage of current peak)
     """
     if cumulative_pnl.empty:
         return pd.Series(dtype=float), 0.0, 0.0, pd.Series(dtype=float)
 
-    # Calculate peak at each point
     high_water_mark = cumulative_pnl.cummax()
-    drawdown_series = high_water_mark - cumulative_pnl # Absolute drawdown from peak
-    max_drawdown_abs = drawdown_series.max()
-
-    # Calculate drawdown percentage
-    # Drawdown percentage is (Peak - Trough) / Peak
-    # To avoid division by zero if initial peak is 0, we handle this.
-    # If HWM is 0, drawdown % is undefined or can be considered 0 if PnL is also 0.
-    drawdown_pct_series = (drawdown_series / high_water_mark).fillna(0) * 100
-    # If high_water_mark is 0, and drawdown_series is >0, it implies negative PnL from start.
-    # This can lead to inf. For practical purposes, if HWM is 0, and PnL < 0, DD% is effectively 100% of loss.
-    # However, standard definition relies on a positive peak.
-    # Let's find the max of this series.
-    max_drawdown_pct = drawdown_pct_series.max()
-
-    if max_drawdown_abs == 0: # No drawdown
-        max_drawdown_pct = 0.0
-
-    # A more robust way to calculate max_drawdown_pct considering the peak at which it occurred:
-    if not drawdown_series.empty:
-        idx_max_drawdown = drawdown_series.idxmax() # Index of the largest absolute drawdown end
-        if idx_max_drawdown is not None and idx_max_drawdown >= 0: # Check for valid index
-            peak_at_max_drawdown = high_water_mark[idx_max_drawdown]
-            if peak_at_max_drawdown > 0: # Ensure peak is positive for meaningful percentage
-                 # Max drawdown value / Peak value before this drawdown started
-                 # To find the actual peak *before* the max drawdown, we need to look at HWM up to the point of max DD
-                 # This is tricky. A simpler way is (Peak - Trough) / Peak.
-                 # Let's use the max of the drawdown_pct_series, but ensure it's capped at 100% if PnL goes very negative from 0.
-                 if cumulative_pnl.min() < 0 and high_water_mark.iloc[0] == 0 and cumulative_pnl.iloc[0] == 0 : # Started at 0, went negative
-                     # if all HWM are 0 and PnL is negative, DD% is effectively infinite or 100% of loss.
-                     # This scenario is complex. For now, rely on (HWM - CumPnL) / HWM.
-                     # If HWM is 0, then drawdown_pct_series elements would be NaN or inf if CumPnL is negative.
-                     # The .fillna(0) above handles NaN. For inf, np.max will pick it up.
-                     # We might want to cap it at 100 if the initial capital was notionally positive.
-                     pass # Keep current max_drawdown_pct calculation
-
-    # Ensure max_drawdown_pct is not erroneously high due to division by small numbers near zero.
-    # If total PnL is negative and started from 0, max drawdown % is effectively 100% of the loss relative to initial 0.
-    # This is a bit ill-defined. If initial capital was >0, it's clearer.
-    # For now, the (HWM - CumPnL) / HWM is standard.
+    drawdown_series = high_water_mark - cumulative_pnl
+    max_drawdown_abs = drawdown_series.max() if not drawdown_series.empty else 0.0
+    
+    drawdown_pct_series = (drawdown_series / high_water_mark.replace(0, np.nan)).fillna(0) * 100
+    max_drawdown_pct = drawdown_pct_series.max() if not drawdown_pct_series.empty else 0.0
+    
+    # Refined handling for max_drawdown_pct if HWM starts at 0 and PnL goes negative
     if high_water_mark.iloc[0] == 0 and cumulative_pnl.min() < 0:
-        # If we started at 0 and PnL became negative, the first peak is 0.
-        # (0 - (-50)) / 0 is problematic.
-        # In this case, max_drawdown_pct could be considered 100% if any loss occurred.
-        # Or, if we consider initial capital implicitly > 0, then it's relative to that.
-        # The current logic might result in `inf` if HWM is 0 and CumPnL is negative, then `max` picks `inf`.
-        # Let's replace `inf` with a large number like 100 or based on context.
-        # For simplicity, if max_drawdown_abs > 0 and initial HWM was 0, it's a full loss of that amount.
-        # The percentage is tricky without a defined initial capital.
-        # The current calculation of drawdown_pct_series should handle this via fillna(0) for 0/0 cases.
-        # If HWM is 0 and CumPnL is negative, (0 - CumPnL) / 0 -> inf.
-        # Let's replace inf in drawdown_pct_series with 0 or a sensible cap.
-        drawdown_pct_series.replace([np.inf, -np.inf], 0, inplace=True) # Or 100 if it's a loss from 0
-        max_drawdown_pct = drawdown_pct_series.max()
-
+        # If the first peak is 0, any loss means 100% drawdown from that peak.
+        # However, the standard calculation (Peak - Trough) / Peak might yield inf or NaN.
+        # A practical approach: if initial capital was 0, and PnL is negative,
+        # the concept of percentage drawdown is less meaningful without a defined capital base.
+        # The current fillna(0) for drawdown_pct_series handles 0/0.
+        # If max_drawdown_abs > 0 and the peak at which it occurred was 0, it's problematic.
+        # For simplicity, if max_drawdown_abs > 0 and initial HWM was 0, we might cap pct at 100 or report as N/A.
+        # The current logic with replace(0, np.nan) in HWM for division should lead to NaNs that become 0.
+        # This implies 0% drawdown if the peak was 0, which might be misleading if losses occurred.
+        # Let's ensure if max_drawdown_abs is positive, max_drawdown_pct is also positive if applicable.
+        if max_drawdown_abs > 0 and max_drawdown_pct == 0 and high_water_mark.abs().sum() == 0:
+             max_drawdown_pct = 100.0 # If absolute drawdown exists but all peaks were zero (e.g. started at 0, lost money)
 
     return drawdown_series, max_drawdown_abs, max_drawdown_pct, drawdown_pct_series
 
@@ -116,442 +69,355 @@ def _calculate_streaks(pnl_series: pd.Series) -> Tuple[int, int]:
     """Calculates maximum win and loss streaks."""
     if pnl_series.empty:
         return 0, 0
-
     wins = pnl_series > 0
     losses = pnl_series < 0
-
-    max_win_streak = 0
-    current_win_streak = 0
+    max_win_streak = current_win_streak = 0
     for w in wins:
-        if w:
-            current_win_streak += 1
-        else:
-            max_win_streak = max(max_win_streak, current_win_streak)
-            current_win_streak = 0
-    max_win_streak = max(max_win_streak, current_win_streak) # Final check
-
-    max_loss_streak = 0
-    current_loss_streak = 0
-    for l_val in losses: # Renamed to avoid conflict with 'l' in lambda
-        if l_val:
-            current_loss_streak += 1
-        else:
-            max_loss_streak = max(max_loss_streak, current_loss_streak)
-            current_loss_streak = 0
-    max_loss_streak = max(max_loss_streak, current_loss_streak) # Final check
-
+        current_win_streak = current_win_streak + 1 if w else 0
+        max_win_streak = max(max_win_streak, current_win_streak)
+    max_loss_streak = current_loss_streak = 0
+    for l_val in losses:
+        current_loss_streak = current_loss_streak + 1 if l_val else 0
+        max_loss_streak = max(max_loss_streak, current_loss_streak)
     return int(max_win_streak), int(max_loss_streak)
 
-def calculate_all_kpis(df: pd.DataFrame, risk_free_rate: float = RISK_FREE_RATE) -> Dict[str, Any]:
+def calculate_benchmark_metrics(
+    strategy_daily_returns: pd.Series,
+    benchmark_daily_returns: pd.Series,
+    risk_free_rate: float, # Annual RFR
+    periods_per_year: int = 252 # Common for daily data
+) -> Dict[str, Any]:
     """
-    Calculates all Key Performance Indicators (KPIs).
-
-    Args:
-        df (pd.DataFrame): Processed DataFrame with trade data. Must include
-                           'pnl', 'cumulative_pnl', 'win', 'loss', 'trade_date_only',
-                           and 'date' (for annualized calculations).
-        risk_free_rate (float): Annual risk-free rate.
-
-    Returns:
-        Dict[str, Any]: A dictionary where keys are KPI names (matching KPI_CONFIG)
-                        and values are the calculated KPI values. Returns an empty
-                        dict if data is insufficient.
+    Calculates Alpha, Beta, Correlation, Tracking Error, and Information Ratio.
+    Assumes daily returns are provided.
     """
+    metrics: Dict[str, Any] = {
+        "alpha": np.nan, "beta": np.nan, "benchmark_correlation": np.nan,
+        "tracking_error": np.nan, "information_ratio": np.nan
+    }
+    if strategy_daily_returns.empty or benchmark_daily_returns.empty:
+        logger.warning("Cannot calculate benchmark metrics: strategy or benchmark returns are empty.")
+        return metrics
+
+    # Align data by date index
+    aligned_df = pd.DataFrame({
+        'strategy': strategy_daily_returns,
+        'benchmark': benchmark_daily_returns
+    }).dropna()
+
+    if len(aligned_df) < 2: # Need at least 2 data points for variance/covariance
+        logger.warning("Not enough overlapping data points between strategy and benchmark to calculate metrics.")
+        return metrics
+
+    strat_returns = aligned_df['strategy']
+    bench_returns = aligned_df['benchmark']
+    
+    # Beta
+    # Beta = Cov(Strategy Returns, Benchmark Returns) / Var(Benchmark Returns)
+    covariance = strat_returns.cov(bench_returns)
+    benchmark_variance = bench_returns.var()
+    if benchmark_variance != 0 and not np.isnan(benchmark_variance):
+        metrics['beta'] = covariance / benchmark_variance
+    else:
+        metrics['beta'] = np.nan # or 0 if benchmark has no variance
+
+    # Alpha
+    # Alpha = (Avg Strategy Return - RFR_daily) - Beta * (Avg Benchmark Return - RFR_daily)
+    # Annualize Alpha at the end
+    daily_rfr = (1 + risk_free_rate)**(1/periods_per_year) - 1
+    
+    avg_strat_return_period = strat_returns.mean()
+    avg_bench_return_period = bench_returns.mean()
+
+    if not np.isnan(metrics['beta']):
+        alpha_period = (avg_strat_return_period - daily_rfr) - metrics['beta'] * (avg_bench_return_period - daily_rfr)
+        metrics['alpha'] = alpha_period * periods_per_year * 100 # Annualized and in percentage
+    else:
+        metrics['alpha'] = np.nan
+
+    # Correlation
+    metrics['benchmark_correlation'] = strat_returns.corr(bench_returns)
+
+    # Tracking Error
+    # Std Dev of (Strategy Returns - Benchmark Returns), annualized
+    difference_returns = strat_returns - bench_returns
+    tracking_error_period = difference_returns.std()
+    if not np.isnan(tracking_error_period):
+        metrics['tracking_error'] = tracking_error_period * np.sqrt(periods_per_year) * 100 # Annualized and in percentage
+    else:
+        metrics['tracking_error'] = np.nan
+        
+    # Information Ratio
+    # (Avg Strategy Return - Avg Benchmark Return) / Tracking Error (using period returns for consistency)
+    # Or, more commonly, (Annualized Alpha) / (Annualized Tracking Error)
+    # Let's use (Avg (Strat - Bench) ) / StdDev(Strat - Bench) - not typically annualized itself but components are
+    if tracking_error_period != 0 and not np.isnan(tracking_error_period):
+        # Using excess return over benchmark per period
+        avg_excess_return_period = difference_returns.mean()
+        metrics['information_ratio'] = avg_excess_return_period / tracking_error_period
+        # Some definitions annualize this: metrics['information_ratio'] *= np.sqrt(periods_per_year)
+        # For now, using the non-annualized version based on period returns.
+    else:
+        metrics['information_ratio'] = np.nan
+        
+    return metrics
+
+
+def calculate_all_kpis(
+    df: pd.DataFrame,
+    risk_free_rate: float = RISK_FREE_RATE,
+    benchmark_daily_returns: Optional[pd.Series] = None, # Daily returns of the benchmark
+    initial_capital: Optional[float] = None # For calculating strategy returns if PnL is absolute
+) -> Dict[str, Any]:
     kpis: Dict[str, Any] = {}
     pnl_col = EXPECTED_COLUMNS['pnl']
+    date_col = EXPECTED_COLUMNS['date'] # Assuming this is the trade execution timestamp
 
-    if df is None or df.empty or pnl_col not in df.columns:
-        logger.warning("KPI calculation skipped: DataFrame is None, empty, or PnL column is missing.")
-        # Return default/NA values for all KPIs defined in config
-        for kpi_key in KPI_CONFIG.keys():
-            kpis[kpi_key] = np.nan # Or 0, or specific default
+    if df is None or df.empty or pnl_col not in df.columns or date_col not in df.columns:
+        logger.warning("KPI calculation skipped: DataFrame is None, empty, or essential columns missing.")
+        for kpi_key in KPI_CONFIG.keys(): kpis[kpi_key] = np.nan
         return kpis
 
     pnl_series = df[pnl_col].dropna()
     if pnl_series.empty:
         logger.warning("KPI calculation skipped: PnL series is empty after dropping NaNs.")
-        for kpi_key in KPI_CONFIG.keys():
-            kpis[kpi_key] = np.nan
+        for kpi_key in KPI_CONFIG.keys(): kpis[kpi_key] = np.nan
         return kpis
 
     # --- Basic Metrics ---
     kpis['total_pnl'] = pnl_series.sum()
     kpis['total_trades'] = len(pnl_series)
-
+    # ... (rest of basic metric calculations as before) ...
     wins = pnl_series[pnl_series > 0]
     losses = pnl_series[pnl_series < 0]
     num_wins = len(wins)
     num_losses = len(losses)
-
     kpis['win_rate'] = (num_wins / kpis['total_trades']) * 100 if kpis['total_trades'] > 0 else 0.0
-    kpis['loss_rate'] = (num_losses / kpis['total_trades']) * 100 if kpis['total_trades'] > 0 else 0.0
-
     total_gross_profit = wins.sum()
-    total_gross_loss = abs(losses.sum()) # abs because losses are negative
-
+    total_gross_loss = abs(losses.sum())
     kpis['profit_factor'] = total_gross_profit / total_gross_loss if total_gross_loss > 0 else np.inf if total_gross_profit > 0 else 0.0
-
     kpis['avg_trade_pnl'] = pnl_series.mean() if kpis['total_trades'] > 0 else 0.0
     kpis['avg_win'] = wins.mean() if num_wins > 0 else 0.0
-    kpis['avg_loss'] = abs(losses.mean()) if num_losses > 0 else 0.0 # abs because losses are negative
-
+    kpis['avg_loss'] = abs(losses.mean()) if num_losses > 0 else 0.0
     kpis['win_loss_ratio'] = kpis['avg_win'] / kpis['avg_loss'] if kpis['avg_loss'] > 0 else np.inf if kpis['avg_win'] > 0 else 0.0
 
+
     # --- Drawdown ---
-    # Assuming 'cumulative_pnl' is already calculated in data_processing
     if 'cumulative_pnl' in df.columns:
-        df['drawdown_abs'], kpis['max_drawdown_abs'], kpis['max_drawdown_pct'], df['drawdown_pct'] = _calculate_drawdowns(df['cumulative_pnl'])
-    else: # Fallback if cumulative_pnl is not pre-calculated
+        # Ensure cumulative_pnl is numeric and has no NaNs for drawdown calculation
+        cum_pnl_for_dd = pd.to_numeric(df['cumulative_pnl'], errors='coerce').fillna(method='ffill').fillna(0)
+        if not cum_pnl_for_dd.empty:
+             _, kpis['max_drawdown_abs'], kpis['max_drawdown_pct'], _ = _calculate_drawdowns(cum_pnl_for_dd)
+        else:
+            kpis['max_drawdown_abs'], kpis['max_drawdown_pct'] = 0.0, 0.0
+    else:
         temp_cum_pnl = pnl_series.cumsum()
-        _, kpis['max_drawdown_abs'], kpis['max_drawdown_pct'], _ = _calculate_drawdowns(temp_cum_pnl)
-    
-    # Ensure drawdown percentages are reasonable (e.g. not inf)
-    if np.isinf(kpis['max_drawdown_pct']):
-        kpis['max_drawdown_pct'] = 100.0 # Cap at 100% if inf occurs
+        if not temp_cum_pnl.empty:
+            _, kpis['max_drawdown_abs'], kpis['max_drawdown_pct'], _ = _calculate_drawdowns(temp_cum_pnl)
+        else:
+            kpis['max_drawdown_abs'], kpis['max_drawdown_pct'] = 0.0, 0.0
+    if np.isinf(kpis['max_drawdown_pct']): kpis['max_drawdown_pct'] = 100.0
 
-
-    # --- Risk-Adjusted Ratios ---
-    # Assuming PnL series represents returns for these calculations.
-    # For daily data, returns_series would be daily PnL. For per-trade data, it's per-trade PnL.
-    # Annualization factor depends on data frequency.
-    # Assuming 252 trading days per year for daily data.
-    # If data is per-trade, annualization is more complex and depends on trade frequency.
-    # Let's assume PnL is per-period (e.g., daily or per trade).
-    # We need number of periods per year.
+    # --- Risk-Adjusted Ratios (Sharpe, Sortino, Calmar) ---
+    # These require periodic returns. We'll use daily returns for consistency.
+    # Group PnL by date to get daily PnL
+    df[date_col] = pd.to_datetime(df[date_col])
+    daily_pnl = df.groupby(df[date_col].dt.date)[pnl_col].sum()
     
-    trading_days_col = 'trade_date_only' # from data_processing
-    num_trading_periods = kpis['total_trades'] # Default to number of trades
-    if trading_days_col in df.columns and df[trading_days_col].nunique() > 1:
-        unique_trading_days = df[trading_days_col].nunique()
-        # If we have daily PnL, then unique_trading_days is the number of periods.
-        # If PnL is per trade, we might annualize based on total duration of trading.
-        # For now, let's use a common approach: assume returns are per period (trade or day).
-        # If we use daily returns:
-        # daily_returns = df.groupby(trading_days_col)[pnl_col].sum()
-        # returns_std = daily_returns.std()
-        # mean_return = daily_returns.mean()
-        # num_periods_in_year = 252
-        
-        # Simpler: use per-trade PnL as returns for now. Annualization factor will be tricky.
-        # Let's calculate Sharpe based on per-trade PnL and not annualize it here,
-        # or provide an option. For now, let's assume PnL series is what we use.
-        
-        returns_series = pnl_series
-        mean_return = returns_series.mean()
-        returns_std = returns_series.std()
+    if initial_capital is not None and initial_capital > 0:
+        # If initial capital is provided, calculate daily % returns
+        # This is a simplification; true portfolio returns evolve with capital.
+        # For a more accurate daily return series based on a fixed initial capital:
+        # One approach: daily_returns = daily_pnl / initial_capital
+        # However, for ratios, it's common to use daily PnL directly if capital base is not dynamic.
+        # Let's assume daily_pnl itself represents the 'return' for ratio calculations if not using %
+        strategy_daily_returns = daily_pnl / initial_capital # Percentage returns
+    else:
+        # If no initial capital, use absolute daily PnL as returns for ratio calculations.
+        # This is common for strategies where capital base is not fixed or easily defined per period.
+        strategy_daily_returns = daily_pnl # Absolute returns
+
+    if not strategy_daily_returns.empty and len(strategy_daily_returns) > 1:
+        mean_daily_return = strategy_daily_returns.mean()
+        std_daily_return = strategy_daily_returns.std()
+        periods_per_year = 252 # Assuming daily data
+
+        # Daily risk-free rate
+        daily_rfr = (1 + risk_free_rate)**(1/periods_per_year) - 1
 
         # Sharpe Ratio
-        if returns_std != 0 and not np.isnan(returns_std):
-            # Assuming risk_free_rate is annual, convert to per-period rate.
-            # This is complex if periods are trades of varying duration.
-            # If we assume 'returns_series' are daily returns, then:
-            # daily_rf_rate = (1 + risk_free_rate)**(1/252) - 1
-            # sharpe = (mean_return - daily_rf_rate) / returns_std * np.sqrt(252)
-            # For per-trade, often RFR is ignored or set to 0 if trades are short-term.
-            # Let's calculate a simplified Sharpe assuming RFR per period is small or 0.
-            # And annualize by sqrt(num_trades_per_year) - also tricky.
-            # For now, a common simplification if RFR is low and trades are frequent:
-            sharpe_ratio_simple = mean_return / returns_std if returns_std > 0 else 0.0
-            # To annualize, if we assume N trades per year: sharpe_annual = sharpe_simple * sqrt(N)
-            # This is an approximation. Let's provide a non-annualized Sharpe for now or based on number of trades.
-            # If we have total duration:
-            if 'date' in df.columns and len(df['date']) > 1:
-                total_duration_years = (df['date'].max() - df['date'].min()).days / 365.25
-                if total_duration_years > 0:
-                    trades_per_year_est = kpis['total_trades'] / total_duration_years
-                    sharpe_annualization_factor = np.sqrt(trades_per_year_est) if trades_per_year_est > 0 else 1
-                    # Per-period risk-free rate (approximate if periods are trades)
-                    # This is a simplification. A proper Sharpe requires consistent period returns.
-                    # Assuming RFR for the average trade period is negligible for now.
-                    # Or, if using daily returns:
-                    # daily_pnl = df.groupby(df['date'].dt.date)[pnl_col].sum()
-                    # if not daily_pnl.empty and daily_pnl.std() > 0:
-                    #     daily_rf = risk_free_rate / 252 # Approximation
-                    #     kpis['sharpe_ratio'] = (daily_pnl.mean() - daily_rf) / daily_pnl.std() * np.sqrt(252)
-
-                    # Using per-trade PnL, simple Sharpe, annualized by sqrt(trades_per_year_est)
-                    # This is a common but debated method for non-fixed-interval returns.
-                    # Assuming risk_free_rate for the period of a single trade is negligible.
-                    kpis['sharpe_ratio'] = sharpe_ratio_simple * sharpe_annualization_factor
-                else: # Not enough duration to annualize
-                    kpis['sharpe_ratio'] = sharpe_ratio_simple # Non-annualized
-            else: # Not enough date info
-                kpis['sharpe_ratio'] = sharpe_ratio_simple # Non-annualized
+        if std_daily_return != 0 and not np.isnan(std_daily_return):
+            kpis['sharpe_ratio'] = (mean_daily_return - daily_rfr) / std_daily_return * np.sqrt(periods_per_year)
         else:
-            kpis['sharpe_ratio'] = 0.0
+            kpis['sharpe_ratio'] = 0.0 if mean_daily_return <= daily_rfr else np.inf
 
         # Sortino Ratio
-        negative_returns = returns_series[returns_series < 0]
-        downside_std = negative_returns.std()
-        if downside_std != 0 and not np.isnan(downside_std):
-            # Similar annualization logic as Sharpe
-            sortino_ratio_simple = mean_return / downside_std if downside_std > 0 else 0.0
-            if 'sharpe_annualization_factor' in locals() and sharpe_annualization_factor !=1:
-                 kpis['sortino_ratio'] = sortino_ratio_simple * sharpe_annualization_factor
-            else: # Not enough duration to annualize or factor is 1
-                 kpis['sortino_ratio'] = sortino_ratio_simple # Non-annualized
+        negative_daily_returns = strategy_daily_returns[strategy_daily_returns < daily_rfr] # Returns below RFR
+        downside_std_daily = (negative_daily_returns - daily_rfr).std() # Std dev of returns below target
+        if downside_std_daily != 0 and not np.isnan(downside_std_daily):
+            kpis['sortino_ratio'] = (mean_daily_return - daily_rfr) / downside_std_daily * np.sqrt(periods_per_year)
         else:
-            kpis['sortino_ratio'] = 0.0 if mean_return <=0 else np.inf # if no downside risk and positive returns
-
-    else: # Not enough data for std dev
+            kpis['sortino_ratio'] = 0.0 if mean_daily_return <= daily_rfr else np.inf
+            
+        # Calmar Ratio: Annualized Return / Max Drawdown %
+        # Annualized return:
+        annualized_return_from_daily = mean_daily_return * periods_per_year
+        if kpis['max_drawdown_pct'] > 0:
+            # Ensure max_drawdown_pct is in decimal form (e.g., 20% -> 0.20)
+            mdd_decimal = kpis['max_drawdown_pct'] / 100.0
+            kpis['calmar_ratio'] = annualized_return_from_daily / mdd_decimal if mdd_decimal > 0 else \
+                                   (np.inf if annualized_return_from_daily > 0 else 0.0)
+        else: # No drawdown
+            kpis['calmar_ratio'] = np.inf if annualized_return_from_daily > 0 else 0.0
+            
+    else: # Not enough data for std dev based ratios
         kpis['sharpe_ratio'] = 0.0
         kpis['sortino_ratio'] = 0.0
-
-    # Calmar Ratio: Annualized PnL / Max Drawdown %
-    # Need annualized PnL.
-    if 'date' in df.columns and len(df['date']) > 1 and kpis['max_drawdown_abs'] > 0: # max_drawdown_abs to avoid division by zero if MDD% is 0
-        total_duration_years = (df['date'].max() - df['date'].min()).days / 365.25
-        if total_duration_years > 0:
-            annualized_pnl = kpis['total_pnl'] / total_duration_years
-            # Max drawdown pct is already a percentage, so use it directly.
-            # Ensure kpis['max_drawdown_pct'] is the absolute percentage (e.g., 20 for 20%)
-            mdd_pct_for_calmar = kpis['max_drawdown_pct'] / 100.0 # Convert to decimal, e.g. 0.20
-            kpis['calmar_ratio'] = annualized_pnl / kpis['max_drawdown_abs'] if kpis['max_drawdown_abs'] > 0 else \
-                                   (np.inf if annualized_pnl > 0 else 0.0)
-            # Alternative: Annualized Return / Max Drawdown (absolute value of MDD)
-            # Calmar is typically (Compound Annual Return) / Max Drawdown.
-            # Using (Total PnL / Years) / Max Drawdown Abs.
-        else:
-            kpis['calmar_ratio'] = 0.0 # Not enough duration
-    else:
         kpis['calmar_ratio'] = 0.0
 
-    # --- VaR and CVaR (Historical Simulation) ---
-    # Loss is represented by negative PnL. For VaR/CVaR, we look at the positive value of these losses.
-    losses_for_var = -pnl_series[pnl_series < 0] # Positive values of losses
+    # --- VaR and CVaR (using daily PnL) ---
+    if not daily_pnl.empty:
+        losses_for_var_daily = -daily_pnl[daily_pnl < 0] # Positive values of daily losses
+        if not losses_for_var_daily.empty:
+            kpis['var_95_loss'] = losses_for_var_daily.quantile(0.95)
+            kpis['cvar_95_loss'] = losses_for_var_daily[losses_for_var_daily >= kpis['var_95_loss']].mean()
+            kpis['var_99_loss'] = losses_for_var_daily.quantile(0.99)
+            kpis['cvar_99_loss'] = losses_for_var_daily[losses_for_var_daily >= kpis['var_99_loss']].mean()
+        else: # No daily losses
+            kpis['var_95_loss'] = kpis['cvar_95_loss'] = kpis['var_99_loss'] = kpis['cvar_99_loss'] = 0.0
+    else: # No daily PnL data
+        kpis['var_95_loss'] = kpis['cvar_95_loss'] = kpis['var_99_loss'] = kpis['cvar_99_loss'] = 0.0
 
-    if not losses_for_var.empty:
-        kpis['var_95_loss'] = losses_for_var.quantile(0.95) if not losses_for_var.empty else 0.0
-        kpis['cvar_95_loss'] = losses_for_var[losses_for_var >= kpis['var_95_loss']].mean() if not losses_for_var.empty and kpis['var_95_loss'] > 0 else 0.0
-        kpis['var_99_loss'] = losses_for_var.quantile(0.99) if not losses_for_var.empty else 0.0
-        kpis['cvar_99_loss'] = losses_for_var[losses_for_var >= kpis['var_99_loss']].mean() if not losses_for_var.empty and kpis['var_99_loss'] > 0 else 0.0
-    else: # No losses
-        kpis['var_95_loss'] = 0.0
-        kpis['cvar_95_loss'] = 0.0
-        kpis['var_99_loss'] = 0.0
-        kpis['cvar_99_loss'] = 0.0
-    
-    # Ensure CVaR is not NaN if VaR is 0 (e.g. few losses)
-    for level in ['95', '99']:
-        var_key = f'var_{level}_loss'
-        cvar_key = f'cvar_{level}_loss'
-        if pd.isna(kpis[cvar_key]) and kpis[var_key] == 0:
-            kpis[cvar_key] = 0.0
-
-
-    # --- Distributional Properties ---
+    # --- Distributional Properties (using per-trade PnL) ---
     kpis['pnl_skewness'] = pnl_series.skew() if kpis['total_trades'] > 2 else 0.0
-    kpis['pnl_kurtosis'] = pnl_series.kurtosis() if kpis['total_trades'] > 3 else 0.0 # Excess kurtosis
+    kpis['pnl_kurtosis'] = pnl_series.kurtosis() if kpis['total_trades'] > 3 else 0.0
 
-    # --- Streaks ---
+    # --- Streaks (using per-trade PnL) ---
     kpis['max_win_streak'], kpis['max_loss_streak'] = _calculate_streaks(pnl_series)
 
     # --- Other Metrics ---
-    if trading_days_col in df.columns:
-        kpis['trading_days'] = df[trading_days_col].nunique()
-        if kpis['trading_days'] > 0:
-            daily_pnl_sum = df.groupby(trading_days_col)[pnl_col].sum()
-            kpis['avg_daily_pnl'] = daily_pnl_sum.mean()
-        else:
-            kpis['avg_daily_pnl'] = 0.0
-    else:
-        kpis['trading_days'] = 0
-        kpis['avg_daily_pnl'] = 0.0
+    kpis['trading_days'] = daily_pnl.count() # Number of days with trades
+    kpis['avg_daily_pnl'] = daily_pnl.mean() if not daily_pnl.empty else 0.0
+    kpis['risk_free_rate_used'] = risk_free_rate * 100
 
-    kpis['risk_free_rate_used'] = risk_free_rate * 100 # Display as percentage
+    # --- Benchmark Metrics ---
+    if benchmark_daily_returns is not None and not benchmark_daily_returns.empty:
+        # Ensure strategy_daily_returns is percentage if benchmark is percentage
+        # If initial_capital was not given, strategy_daily_returns are absolute.
+        # For Alpha/Beta, consistent return types (percentage) are preferred.
+        # This section assumes `strategy_daily_returns` are appropriate for benchmark comparison.
+        # If `initial_capital` was not provided, `strategy_daily_returns` are absolute daily PnLs.
+        # This might not be ideal for direct Alpha/Beta calculation against a benchmark's % returns.
+        # For now, we proceed, but highlight this dependency.
+        if initial_capital is None:
+            logger.warning("Calculating benchmark metrics (Alpha, Beta) using absolute daily PnL for strategy as initial_capital was not provided. Results may be hard to interpret against benchmark's percentage returns.")
 
-    # Fill any remaining NaNs with 0 or appropriate default
-    for key, value in kpis.items():
-        if pd.isna(value):
-            logger.warning(f"KPI '{key}' resulted in NaN, setting to 0.0. Check data or calculation logic.")
-            kpis[key] = 0.0
-        elif np.isinf(value):
-            logger.warning(f"KPI '{key}' resulted in Inf, setting to a large number (or 0 if appropriate). Check for division by zero.")
-            # Decide if Inf should be 0 or a large number based on KPI context
-            # For ratios like Profit Factor, Inf can be valid if losses are zero.
-            # For others, it might indicate an issue.
-            if key in ["profit_factor", "win_loss_ratio", "sortino_ratio"] and kpis[key] > 0: # Positive infinity is okay
-                pass
+        benchmark_kpis = calculate_benchmark_metrics(
+            strategy_daily_returns, # This should ideally be % returns
+            benchmark_daily_returns,
+            risk_free_rate
+        )
+        kpis.update(benchmark_kpis)
+        
+        # Calculate benchmark total return over the period of strategy_daily_returns
+        if not strategy_daily_returns.empty and not benchmark_daily_returns.empty:
+            aligned_benchmark_returns = benchmark_daily_returns.reindex(strategy_daily_returns.index).dropna()
+            if not aligned_benchmark_returns.empty:
+                kpis['benchmark_total_return'] = ( (1 + aligned_benchmark_returns).cumprod().iloc[-1] - 1) * 100 # As percentage
             else:
-                kpis[key] = 0.0 # Default for problematic infinities
+                kpis['benchmark_total_return'] = np.nan
+    else: # No benchmark data
+        kpis['benchmark_total_return'] = np.nan
+        kpis['alpha'] = np.nan
+        kpis['beta'] = np.nan
+        kpis['benchmark_correlation'] = np.nan
+        kpis['tracking_error'] = np.nan
+        kpis['information_ratio'] = np.nan
 
 
-    logger.info(f"Calculated KPIs: {kpis}")
+    # Final cleanup of NaNs and Infs
+    for key, value in kpis.items():
+        if pd.isna(value): kpis[key] = 0.0 # Default NaN to 0, review if specific KPIs need other defaults
+        elif np.isinf(value):
+            # For ratios like Profit Factor, Inf can be valid if losses are zero and profits positive.
+            # For others, it might indicate an issue or should be capped.
+            if key in ["profit_factor", "win_loss_ratio", "sortino_ratio", "sharpe_ratio", "calmar_ratio"] and value > 0:
+                pass # Positive infinity is okay for these if numerator positive and denominator zero
+            else:
+                kpis[key] = 0.0 # Default for problematic infinities or negative infinities
+
+    logger.info(f"Calculated KPIs (including benchmark if provided).")
     return kpis
 
 
 def get_kpi_interpretation(kpi_key: str, value: float) -> Tuple[str, str]:
-    """
-    Provides a qualitative interpretation for a given KPI value based on predefined thresholds.
-
-    Args:
-        kpi_key (str): The key of the KPI (must exist in KPI_CONFIG).
-        value (float): The calculated value of the KPI.
-
-    Returns:
-        Tuple[str, str]: (Qualitative label, Threshold description string)
-                         Returns ("N/A", "No thresholds defined") if KPI not in config.
-    """
     if kpi_key not in KPI_CONFIG or pd.isna(value):
         return "N/A", "KPI not found or value is NaN"
-
     config = KPI_CONFIG[kpi_key]
     thresholds = config.get("thresholds", [])
     unit = config.get("unit", "")
-
-    interpretation = "N/A" # Default if no threshold matches
-    threshold_desc = "N/A"
-
+    interpretation = "N/A"; threshold_desc = "N/A"
     for label, min_val, max_val_exclusive in thresholds:
         if min_val <= value < max_val_exclusive:
             interpretation = label
-            # Format threshold description
-            if min_val == float('-inf'):
-                threshold_desc = f"Val: {value:,.2f}{unit}, Thr: < {max_val_exclusive:,.1f}{unit}"
-            elif max_val_exclusive == float('inf'):
-                threshold_desc = f"Val: {value:,.2f}{unit}, Thr: >= {min_val:,.1f}{unit}"
-            else:
-                threshold_desc = f"Val: {value:,.2f}{unit}, Thr: {min_val:,.1f} - {max_val_exclusive:,.1f}{unit}"
+            if min_val == float('-inf'): threshold_desc = f"< {max_val_exclusive:,.1f}{unit}"
+            elif max_val_exclusive == float('inf'): threshold_desc = f">= {min_val:,.1f}{unit}"
+            else: threshold_desc = f"{min_val:,.1f} - {max_val_exclusive:,.1f}{unit}"
             break
-    # Handle cases where value might be exactly on a boundary if logic implies inclusive max
-    # The current loop is exclusive for max_val. If last threshold is (label, min_val, inf), it's inclusive of min_val.
-
-    if interpretation == "N/A" and thresholds: # If no range matched, check if it's beyond last range
+    if interpretation == "N/A" and thresholds:
         last_label, last_min, last_max = thresholds[-1]
-        if value >= last_min and last_max == float('inf'): # Check if it should fall into the "highest" category
-            interpretation = last_label
-            threshold_desc = f"Val: {value:,.2f}{unit}, Thr: >= {last_min:,.1f}{unit}"
-        elif thresholds and value < thresholds[0][1] and thresholds[0][1] == float('-inf'): # Check lowest category
-            first_label, _, first_max = thresholds[0]
-            interpretation = first_label
-            threshold_desc = f"Val: {value:,.2f}{unit}, Thr: < {first_max:,.1f}{unit}"
-
-
-    if interpretation == "N/A":
-        threshold_desc = f"Val: {value:,.2f}{unit}, No specific range matched."
-
-
-    return interpretation, threshold_desc
-
+        if value >= last_min and last_max == float('inf'):
+            interpretation = last_label; threshold_desc = f">= {last_min:,.1f}{unit}"
+        elif value < thresholds[0][1] and thresholds[0][1] != float('-inf'): # Check if below first defined range start
+             interpretation = thresholds[0][0]; threshold_desc = f"< {thresholds[0][1]:,.1f}{unit}" # Assuming first label is for values below its min
+    return interpretation, f"Val: {value:,.2f}{unit} (Thr: {threshold_desc})" if interpretation != "N/A" else f"Val: {value:,.2f}{unit}"
 
 def get_kpi_color(kpi_key: str, value: float) -> str:
-    """
-    Determines the color for a KPI value based on its configuration.
-
-    Args:
-        kpi_key (str): The key of the KPI.
-        value (float): The calculated value of the KPI.
-
-    Returns:
-        str: Hex color code (e.g., "#00FF00" for green).
-             Returns gray if KPI not found or value is NaN.
-    """
-    if kpi_key not in KPI_CONFIG or pd.isna(value) or np.isinf(value): # Handle inf values as neutral for color
-        return COLORS["gray"]
-
+    if kpi_key not in KPI_CONFIG or pd.isna(value) or np.isinf(value):
+        return COLORS.get("gray", "#808080")
     config = KPI_CONFIG[kpi_key]
     color_logic = config.get("color_logic")
-
     if color_logic:
-        # Thresholds might be needed for some color logic, but not all.
-        # The lambda in config should handle this. For now, pass a dummy threshold if not used.
-        threshold_for_color = 0 # Example, adjust if specific thresholds are needed by lambda
-        return color_logic(value, threshold_for_color)
-    return COLORS["gray"]
-
+        # The lambda in config should handle its own logic.
+        # The 't' (threshold) parameter in lambda is not strictly used by current color_logics,
+        # but kept for potential future use if color depends on specific thresholds.
+        return color_logic(value, 0) # Pass dummy threshold
+    return COLORS.get("gray", "#808080")
 
 if __name__ == '__main__':
-    # --- Test Data Setup ---
+    logger.info("--- Testing KPI Calculations (with benchmark stubs) ---")
+    sample_dates = pd.to_datetime([
+        '2023-01-01 10:00:00', '2023-01-01 12:00:00', '2023-01-02 09:30:00',
+        '2023-01-02 15:00:00', '2023-01-03 11:00:00', '2023-01-04 10:00:00',
+        '2023-01-04 14:00:00', '2023-01-05 09:00:00', '2023-01-05 16:00:00',
+        '2023-01-06 10:00:00'
+    ])
     sample_data = {
-        EXPECTED_COLUMNS['date']: pd.to_datetime([
-            '2023-01-01 10:00:00', '2023-01-01 12:00:00', '2023-01-02 09:30:00',
-            '2023-01-02 15:00:00', '2023-01-03 11:00:00', '2023-01-04 10:00:00',
-            '2023-01-04 14:00:00', '2023-01-05 09:00:00', '2023-01-05 16:00:00',
-            '2023-01-06 10:00:00'
-        ]),
-        EXPECTED_COLUMNS['pnl']: [100, -50, 200, 50, -150, 80, -30, 120, 60, -70],
+        EXPECTED_COLUMNS['date']: sample_dates,
+        EXPECTED_COLUMNS['pnl']: [10, -5, 20, 5, -15, 8, -3, 12, 6, -7],
     }
     test_df = pd.DataFrame(sample_data)
-
-    # Simulate features from data_processing
     test_df['cumulative_pnl'] = test_df[EXPECTED_COLUMNS['pnl']].cumsum()
-    test_df['win'] = test_df[EXPECTED_COLUMNS['pnl']] > 0
-    test_df['loss'] = test_df[EXPECTED_COLUMNS['pnl']] < 0
-    test_df['trade_date_only'] = test_df[EXPECTED_COLUMNS['date']].dt.date
 
-    logger.info("--- Testing KPI Calculations ---")
-    kpis = calculate_all_kpis(test_df)
+    # Mock benchmark daily returns (ensure index aligns with test_df daily dates)
+    unique_trade_dates = pd.to_datetime(test_df[EXPECTED_COLUMNS['date']].dt.date.unique()).sort_values()
+    mock_bench_returns = pd.Series(np.random.randn(len(unique_trade_dates)) * 0.005 + 0.0001, index=unique_trade_dates) # Small positive drift
+    
+    kpis_with_bench = calculate_all_kpis(test_df.copy(), risk_free_rate=0.02, benchmark_daily_returns=mock_bench_returns, initial_capital=100000)
+    logger.info("\n--- KPIs with Benchmark ---")
+    for k, v in kpis_with_bench.items():
+        if k in KPI_CONFIG:
+            interp, desc = get_kpi_interpretation(k,v)
+            logger.info(f"{KPI_CONFIG[k]['name']}: {v:.4f} ({KPI_CONFIG[k]['unit']}) - {interp} ({desc})")
+        else:
+            logger.info(f"{k.replace('_',' ').title()}: {v:.4f}")
 
-    if kpis:
-        for kpi_name, kpi_value in kpis.items():
-            interpretation, desc = get_kpi_interpretation(kpi_name, kpi_value)
-            color = get_kpi_color(kpi_name, kpi_value)
-            config_name = KPI_CONFIG.get(kpi_name, {}).get("name", kpi_name.replace("_", " ").title())
-            unit = KPI_CONFIG.get(kpi_name, {}).get("unit", "")
-            logger.info(
-                f"{config_name}: {kpi_value:,.2f}{unit} "
-                f"(Interpretation: {interpretation}, Desc: {desc}, Color: {color})"
-            )
-    else:
-        logger.error("KPI calculation returned empty dict.")
-
-    logger.info("\n--- Test with minimal data (1 trade) ---")
-    minimal_df = test_df.head(1).copy()
-    minimal_df['cumulative_pnl'] = minimal_df[EXPECTED_COLUMNS['pnl']].cumsum()
-    minimal_df['trade_date_only'] = minimal_df[EXPECTED_COLUMNS['date']].dt.date
-    kpis_minimal = calculate_all_kpis(minimal_df)
-    if kpis_minimal:
-        logger.info(f"Total PnL (1 trade): {kpis_minimal.get('total_pnl')}")
-        logger.info(f"Sharpe (1 trade): {kpis_minimal.get('sharpe_ratio')}") # Should be 0 or NaN
-    else:
-        logger.error("KPI calculation for minimal data failed.")
-
-
-    logger.info("\n--- Test with all winning trades ---")
-    all_wins_data = {
-        EXPECTED_COLUMNS['date']: pd.to_datetime(['2023-01-01 10:00:00', '2023-01-01 12:00:00']),
-        EXPECTED_COLUMNS['pnl']: [100, 50],
-    }
-    all_wins_df = pd.DataFrame(all_wins_data)
-    all_wins_df['cumulative_pnl'] = all_wins_df[EXPECTED_COLUMNS['pnl']].cumsum()
-    all_wins_df['win'] = all_wins_df[EXPECTED_COLUMNS['pnl']] > 0
-    all_wins_df['loss'] = all_wins_df[EXPECTED_COLUMNS['pnl']] < 0
-    all_wins_df['trade_date_only'] = all_wins_df[EXPECTED_COLUMNS['date']].dt.date
-    kpis_all_wins = calculate_all_kpis(all_wins_df)
-    if kpis_all_wins:
-        logger.info(f"Profit Factor (all wins): {kpis_all_wins.get('profit_factor')}") # Should be inf
-        logger.info(f"Sortino (all wins): {kpis_all_wins.get('sortino_ratio')}") # Should be inf
-    else:
-        logger.error("KPI calculation for all wins data failed.")
-
-    logger.info("\n--- Test with DataFrame having only NaNs in PnL ---")
-    nan_pnl_data = {
-        EXPECTED_COLUMNS['date']: pd.to_datetime(['2023-01-01 10:00:00', '2023-01-01 12:00:00']),
-        EXPECTED_COLUMNS['pnl']: [np.nan, np.nan],
-    }
-    nan_pnl_df = pd.DataFrame(nan_pnl_data)
-    # Simulate features, though they'd also be NaN or problematic
-    nan_pnl_df['cumulative_pnl'] = nan_pnl_df[EXPECTED_COLUMNS['pnl']].cumsum()
-    nan_pnl_df['win'] = nan_pnl_df[EXPECTED_COLUMNS['pnl']] > 0
-    nan_pnl_df['loss'] = nan_pnl_df[EXPECTED_COLUMNS['pnl']] < 0
-    nan_pnl_df['trade_date_only'] = nan_pnl_df[EXPECTED_COLUMNS['date']].dt.date
-    kpis_nan_pnl = calculate_all_kpis(nan_pnl_df)
-    if kpis_nan_pnl and all(pd.isna(v) or v == 0 for v in kpis_nan_pnl.values()): # Expect NaNs or 0s
-        logger.info(f"KPIs for NaN PnL data (e.g., Total PnL): {kpis_nan_pnl.get('total_pnl')}")
-        logger.info("Correctly handled NaN PnL data.")
-    else:
-        logger.error(f"KPI calculation for NaN PnL data produced unexpected results: {kpis_nan_pnl}")
-
-    logger.info("\n--- Test _calculate_drawdowns with initial zero PnL and then loss ---")
-    drawdown_test_pnl = pd.Series([0, -50, -20, 30, -60])
-    drawdown_test_cum_pnl = drawdown_test_pnl.cumsum() # [0, -50, -70, -40, -100]
-    dd_series, max_dd_abs, max_dd_pct, dd_pct_series = _calculate_drawdowns(drawdown_test_cum_pnl)
-    logger.info(f"Cum PnL: {drawdown_test_cum_pnl.tolist()}")
-    logger.info(f"Max DD Abs: {max_dd_abs}, Max DD Pct: {max_dd_pct}%") # Expected Abs: 100, Pct: tricky, maybe 0 or 100
-    logger.info(f"DD Series: {dd_series.tolist()}")
-    logger.info(f"DD Pct Series: {dd_pct_series.tolist()}")
-    # Expected: HWM = [0, 0, 0, 0, 0]. DD_ABS = [0, 50, 70, 40, 100]. Max_DD_ABS = 100.
-    # DD_PCT = (HWM - CumPnL) / HWM. If HWM is 0, (0 - CumPnL)/0.
-    # (0 - 0)/0 = NaN -> 0. (0 - (-50))/0 = Inf -> 0. Max_DD_PCT = 0. This needs refinement.
-    # The logic in _calculate_drawdowns for max_drawdown_pct has been updated.
+    kpis_no_bench = calculate_all_kpis(test_df.copy(), risk_free_rate=0.02, initial_capital=100000)
+    logger.info("\n--- KPIs without Benchmark ---")
+    for k, v in kpis_no_bench.items():
+        if k in KPI_CONFIG and k not in ['alpha', 'beta', 'benchmark_correlation', 'benchmark_total_return', 'tracking_error', 'information_ratio']: # Exclude benchmark specific
+            interp, desc = get_kpi_interpretation(k,v)
+            logger.info(f"{KPI_CONFIG[k]['name']}: {v:.4f} ({KPI_CONFIG[k]['unit']}) - {interp} ({desc})")
+        elif k not in ['alpha', 'beta', 'benchmark_correlation', 'benchmark_total_return', 'tracking_error', 'information_ratio']:
+             logger.info(f"{k.replace('_',' ').title()}: {v:.4f}")
 
