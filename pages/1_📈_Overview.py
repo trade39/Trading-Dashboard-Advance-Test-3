@@ -123,102 +123,96 @@ def show_overview_page():
         logger.error(f"Error displaying equity curve: {e}", exc_info=True)
         display_custom_message(f"An error occurred displaying the equity curve: {e}", "error")
 
+    st.markdown("---")
+
     if benchmark_daily_returns is not None and not benchmark_daily_returns.empty:
         st.subheader(f"Strategy Equity vs. {selected_benchmark_display_name}")
         try:
             date_col = EXPECTED_COLUMNS.get('date')
-            cum_pnl_col = 'cumulative_pnl' # This is absolute PnL over time
+            cum_pnl_col = 'cumulative_pnl' 
 
             if date_col not in filtered_df.columns or cum_pnl_col not in filtered_df.columns:
                 display_custom_message("Required columns for equity vs. benchmark plot are missing.", "error")
             else:
-                # 1. Strategy Equity Series (Absolute Value)
-                # Starts at initial_capital and grows/shrinks with cumulative PnL
                 strategy_cum_pnl_series = filtered_df.set_index(date_col)[cum_pnl_col]
-                # To make it start from initial_capital:
-                # The first value of cum_pnl_series is the PnL of the first trade.
-                # Equity = initial_capital + cum_pnl
-                # We need to adjust if cum_pnl doesn't start from 0 relative to the first trade.
-                # A simpler way: initial_capital + (cum_pnl - first_cum_pnl_value_if_not_0 + first_pnl_value)
-                # Or, more directly:
-                strategy_equity_values = initial_capital + strategy_cum_pnl_series
+                strategy_plot_equity = initial_capital + strategy_cum_pnl_series
                 
-                logger.debug(f"Raw strategy equity values (initial_capital + cum_pnl) head:\n{strategy_equity_values.head()}")
+                # Ensure benchmark_daily_returns is a Series
+                bm_daily_returns_series = benchmark_daily_returns
+                if isinstance(bm_daily_returns_series, pd.DataFrame):
+                    bm_daily_returns_series = bm_daily_returns_series.squeeze() # Convert to Series if it's a single-column DataFrame
+                if not isinstance(bm_daily_returns_series, pd.Series):
+                    logger.error(f"Benchmark daily returns is not a Series. Type: {type(bm_daily_returns_series)}")
+                    display_custom_message("Benchmark data is not in the correct format (Series expected).", "error")
+                    return # Stop further processing for this plot
 
-
-                # 2. Benchmark Equity Series (Scaled to Initial Capital)
-                # benchmark_daily_returns is already % change
-                benchmark_cumulative_growth_factor = (1 + benchmark_daily_returns).cumprod()
-                # The first value of cumprod will be (1 + first_return). To make it start at 1:
-                if not benchmark_cumulative_growth_factor.empty:
-                    # Prepend a "1" at the start date of the benchmark series for normalization
-                    first_bm_date = benchmark_daily_returns.index.min()
-                    # Create a series that starts with 1, then cumprod
-                    # This ensures benchmark growth starts from a factor of 1
-                    bm_returns_for_factor = benchmark_daily_returns.copy()
-                    # If the first day's return is NaN (from pct_change), cumprod might start with NaN.
-                    # Fill first NaN with 0 to ensure cumprod starts correctly.
-                    if pd.isna(bm_returns_for_factor.iloc[0]):
+                benchmark_plot_equity = pd.Series(dtype=float) # Initialize
+                if not bm_daily_returns_series.empty:
+                    bm_returns_for_factor = bm_daily_returns_series.copy()
+                    if not bm_returns_for_factor.empty and pd.isna(bm_returns_for_factor.iloc[0]):
                         bm_returns_for_factor.iloc[0] = 0.0
                     
                     benchmark_cumulative_growth_factor = (1 + bm_returns_for_factor).cumprod()
-                    benchmark_plot_equity = benchmark_cumulative_growth_factor * initial_capital
-                else:
-                    benchmark_plot_equity = pd.Series(dtype=float)
+                    if not benchmark_cumulative_growth_factor.empty:
+                         benchmark_plot_equity = benchmark_cumulative_growth_factor * initial_capital
+                
+                logger.debug(f"Strategy plot equity head:\n{strategy_plot_equity.head() if not strategy_plot_equity.empty else 'Empty'}")
+                logger.debug(f"Benchmark plot equity head:\n{benchmark_plot_equity.head() if not benchmark_plot_equity.empty else 'Empty'}")
 
-                logger.debug(f"Benchmark daily returns head:\n{benchmark_daily_returns.head()}")
-                logger.debug(f"Benchmark cumulative growth factor head:\n{benchmark_cumulative_growth_factor.head() if not benchmark_cumulative_growth_factor.empty else 'Empty'}")
-                logger.debug(f"Benchmark plot equity (scaled) head:\n{benchmark_plot_equity.head() if not benchmark_plot_equity.empty else 'Empty'}")
+                strategy_plot_equity_aligned = pd.Series(dtype=float)
+                benchmark_plot_equity_aligned = pd.Series(dtype=float)
 
-                # 3. Align and Plot
-                if not strategy_equity_values.empty or not benchmark_plot_equity.empty:
-                    # Create a common date index based on the union of both series' indices
-                    # This ensures both lines are plotted over the full available range.
-                    common_min_date = min(strategy_equity_values.index.min() if not strategy_equity_values.empty else pd.Timestamp.max,
-                                          benchmark_plot_equity.index.min() if not benchmark_plot_equity.empty else pd.Timestamp.max)
-                    common_max_date = max(strategy_equity_values.index.max() if not strategy_equity_values.empty else pd.Timestamp.min,
-                                          benchmark_plot_equity.index.max() if not benchmark_plot_equity.empty else pd.Timestamp.min)
-
-                    if common_min_date > common_max_date: # Should not happen if at least one series has data
-                         display_custom_message("Cannot align strategy and benchmark due to date issues.", "warning"); return
-
-                    # Reindex both series to this common index, then forward-fill
-                    # For points where one series exists but the other doesn't yet, ffill will carry forward.
-                    # For points before a series starts, fill with initial_capital.
+                if not strategy_plot_equity.empty or not benchmark_plot_equity.empty:
+                    # Determine common date range using min/max of available indices
+                    all_dates = pd.Index([])
+                    if not strategy_plot_equity.empty:
+                        all_dates = all_dates.union(strategy_plot_equity.index)
+                    if not benchmark_plot_equity.empty:
+                        all_dates = all_dates.union(benchmark_plot_equity.index)
                     
-                    # Strategy alignment:
-                    strategy_plot_equity_aligned = strategy_equity_values.reindex(pd.date_range(start=common_min_date, end=common_max_date, freq='B')) # Use Business Day freq
-                    strategy_plot_equity_aligned = strategy_plot_equity_aligned.ffill().fillna(initial_capital)
-                    
-                    # Benchmark alignment:
-                    benchmark_plot_equity_aligned = benchmark_plot_equity.reindex(strategy_plot_equity_aligned.index) # Align to strategy's final index
-                    benchmark_plot_equity_aligned = benchmark_plot_equity_aligned.ffill()
-                    # If benchmark starts later than strategy, fill initial NaNs with initial_capital
-                    if not benchmark_plot_equity_aligned.empty and pd.isna(benchmark_plot_equity_aligned.iloc[0]):
-                         benchmark_plot_equity_aligned.iloc[0] = initial_capital
-                         benchmark_plot_equity_aligned = benchmark_plot_equity_aligned.ffill() # Re-ffill after setting first point
-                    benchmark_plot_equity_aligned = benchmark_plot_equity_aligned.fillna(initial_capital) # Catch any remaining NaNs
+                    if not all_dates.empty:
+                        common_min_date = all_dates.min()
+                        common_max_date = all_dates.max()
+                        
+                        # Create a business day index over this common range
+                        aligned_index = pd.date_range(start=common_min_date, end=common_max_date, freq='B')
+
+                        if not strategy_plot_equity.empty:
+                            strategy_plot_equity_aligned = strategy_plot_equity.reindex(aligned_index).ffill().fillna(initial_capital)
+                        else: # If strategy equity is empty, fill with initial capital for alignment
+                            strategy_plot_equity_aligned = pd.Series(initial_capital, index=aligned_index)
 
 
-                    logger.debug(f"Aligned strategy equity head:\n{strategy_plot_equity_aligned.head()}")
-                    logger.debug(f"Aligned benchmark equity head:\n{benchmark_plot_equity_aligned.head()}")
-                    logger.debug(f"Aligned strategy equity tail:\n{strategy_plot_equity_aligned.tail()}")
-                    logger.debug(f"Aligned benchmark equity tail:\n{benchmark_plot_equity_aligned.tail()}")
-                    logger.debug(f"Aligned strategy equity describe:\n{strategy_plot_equity_aligned.describe()}")
-                    logger.debug(f"Aligned benchmark equity describe:\n{benchmark_plot_equity_aligned.describe()}")
+                        if not benchmark_plot_equity.empty:
+                            benchmark_plot_equity_aligned = benchmark_plot_equity.reindex(aligned_index).ffill()
+                            # If benchmark starts later, its initial NaNs should be initial_capital
+                            if not benchmark_plot_equity_aligned.empty and pd.isna(benchmark_plot_equity_aligned.iloc[0]):
+                                benchmark_plot_equity_aligned.iloc[0] = initial_capital
+                                benchmark_plot_equity_aligned = benchmark_plot_equity_aligned.ffill()
+                            benchmark_plot_equity_aligned = benchmark_plot_equity_aligned.fillna(initial_capital)
+                        else: # If benchmark equity is empty, fill with initial capital
+                            benchmark_plot_equity_aligned = pd.Series(initial_capital, index=aligned_index)
+                    else: # Both are empty, or some other issue
+                         display_custom_message("Not enough date information to align strategy and benchmark.", "warning"); return
 
 
-                    equity_vs_bench_fig = plot_equity_vs_benchmark(
-                        strategy_equity=strategy_plot_equity_aligned,
-                        benchmark_cumulative_returns=benchmark_plot_equity_aligned, # Pass the scaled equity
-                        strategy_name="Strategy Equity",
-                        benchmark_name=f"{selected_benchmark_display_name} (Scaled Equity)",
-                        theme=plot_theme
-                    )
-                    if equity_vs_bench_fig:
-                        st.plotly_chart(equity_vs_bench_fig, use_container_width=True)
+                    logger.debug(f"Final Aligned strategy equity head:\n{strategy_plot_equity_aligned.head() if not strategy_plot_equity_aligned.empty else 'Empty'}")
+                    logger.debug(f"Final Aligned benchmark equity head:\n{benchmark_plot_equity_aligned.head() if not benchmark_plot_equity_aligned.empty else 'Empty'}")
+
+                    if not strategy_plot_equity_aligned.empty or not benchmark_plot_equity_aligned.empty:
+                        equity_vs_bench_fig = plot_equity_vs_benchmark(
+                            strategy_equity=strategy_plot_equity_aligned,
+                            benchmark_cumulative_returns=benchmark_plot_equity_aligned,
+                            strategy_name="Strategy Equity",
+                            benchmark_name=f"{selected_benchmark_display_name} (Scaled Equity)",
+                            theme=plot_theme
+                        )
+                        if equity_vs_bench_fig:
+                            st.plotly_chart(equity_vs_bench_fig, use_container_width=True)
+                        else:
+                            display_custom_message("Could not generate equity vs. benchmark chart.", "warning")
                     else:
-                        display_custom_message("Could not generate equity vs. benchmark chart.", "warning")
+                        display_custom_message("No data to plot for equity vs. benchmark after alignment.", "info")
                 else:
                     display_custom_message("Not enough data for strategy or benchmark to plot comparison.", "info")
         except Exception as e:
