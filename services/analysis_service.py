@@ -36,45 +36,53 @@ except ImportError as e:
     PROPHET_AVAILABLE = False; PMDARIMA_AVAILABLE = False; LIFELINES_AVAILABLE = False; CONFIDENCE_LEVEL = 0.95; BOOTSTRAP_ITERATIONS = 1000
     def calculate_all_kpis(df, rfr, benchmark_daily_returns=None, initial_capital=None): return {"error": "calc_kpis not loaded"}
     def bootstrap_confidence_interval(d, _sf, **kw): return {"error": "bootstrap_ci not loaded", "lb":np.nan, "ub":np.nan, "bootstrap_statistics": []}
-    # Add dummy for survival_analysis_kaplan_meier if it's called by a method in this class during init or similar
     def survival_analysis_kaplan_meier(*args, **kwargs): return {"error": "survival_analysis_kaplan_meier not loaded"}
 
 
 import logging
 logger = logging.getLogger(APP_TITLE)
 
-@st.cache_data(ttl=3600, show_spinner="Fetching benchmark data...") 
+# --- Standalone Cached Function for Benchmark Data ---
+@st.cache_data(ttl=3600) # Temporarily removed show_spinner for debugging
 def get_benchmark_data_static(
     ticker: str, 
     start_date_str: str, 
     end_date_str: str
 ) -> Optional[pd.Series]:
     logger_static_func = logging.getLogger(f"{APP_TITLE}.get_benchmark_data_static")
+
     if not ticker:
         logger_static_func.info("No benchmark ticker provided. Skipping data fetch.")
         return None
     try:
         start_dt = pd.to_datetime(start_date_str)
         end_dt = pd.to_datetime(end_date_str)
+
         if start_dt >= end_dt:
-            logger_static_func.warning(f"Benchmark start date {start_date_str} >= end date {end_date_str}. Cannot fetch.")
+            logger_static_func.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str} in get_benchmark_data_static. Cannot fetch data.")
             return None
+
         fetch_end_dt = end_dt + pd.Timedelta(days=1)
-        logger_static_func.info(f"Fetching benchmark: {ticker} from {start_dt.date()} to {end_dt.date()}")
+
+        logger_static_func.info(f"Fetching benchmark data for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()}) via get_benchmark_data_static")
         data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False, auto_adjust=True, actions=False)
+        
         if data.empty or 'Close' not in data.columns:
-            logger_static_func.warning(f"No data or 'Close' not found for benchmark {ticker}.")
+            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str} (get_benchmark_data_static).")
             return None
+        
         daily_adj_close = data['Close'].dropna()
         if len(daily_adj_close) < 2:
-            logger_static_func.warning(f"Not enough benchmark data for {ticker} (<2 points).")
+            logger_static_func.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2) in get_benchmark_data_static.")
             return None
+            
         daily_returns = daily_adj_close.pct_change().dropna()
         daily_returns.name = f"{ticker}_returns"
-        logger_static_func.info(f"Fetched benchmark returns for {ticker}. Shape: {daily_returns.shape}")
+        
+        logger_static_func.info(f"Successfully fetched and processed benchmark returns for {ticker} via get_benchmark_data_static. Shape: {daily_returns.shape}")
         return daily_returns
     except Exception as e:
-        logger_static_func.error(f"Error fetching benchmark for {ticker}: {e}", exc_info=True)
+        logger_static_func.error(f"Error fetching benchmark data for {ticker} in get_benchmark_data_static: {e}", exc_info=True)
         return None
 
 class AnalysisService:
@@ -96,7 +104,7 @@ class AnalysisService:
         rfr = risk_free_rate if risk_free_rate is not None else RISK_FREE_RATE
         try:
             pnl_col_name = EXPECTED_COLUMNS.get('pnl')
-            date_col_name = EXPECTED_COLUMNS.get('date') # Ensure date column is also checked
+            date_col_name = EXPECTED_COLUMNS.get('date') 
             if not pnl_col_name or pnl_col_name not in trades_df.columns:
                 return {"error": f"Required PnL column ('{pnl_col_name}') not found."}
             if not date_col_name or date_col_name not in trades_df.columns:
@@ -121,10 +129,9 @@ class AnalysisService:
             return {"error": "Lifelines library not available for Kaplan-Meier analysis."}
         if durations is None or durations.dropna().empty:
             return {"error": "Durations data is empty or all NaN for Kaplan-Meier."}
-        if len(durations.dropna()) < 5 : # Lifelines might need a few points
+        if len(durations.dropna()) < 5 : 
              return {"error": "Insufficient duration data points (need at least 5) for Kaplan-Meier."}
         
-        # Align event_observed with non-NaN durations
         valid_durations = durations.dropna()
         aligned_event_observed = event_observed.loc[valid_durations.index].fillna(True).astype(bool)
 
@@ -132,17 +139,16 @@ class AnalysisService:
             return {"error": "Mismatch between valid durations and event observations after alignment."}
 
         try: 
-            # survival_analysis_kaplan_meier is imported from ai_models.py
             result = survival_analysis_kaplan_meier(valid_durations, aligned_event_observed)
-            if result is None: # Function itself might return None on internal error
+            if result is None: 
                 return {"error": "Kaplan-Meier analysis function returned None unexpectedly."}
             self.logger.info("Kaplan-Meier analysis successful in service.")
             return result
         except Exception as e: 
             self.logger.error(f"Error during Kaplan-Meier analysis in service: {e}", exc_info=True)
             return {"error": str(e)}
-
-    # ... (rest of AnalysisService methods: get_bootstrapped_kpi_cis, etc.) ...
+            
+    # ... (rest of AnalysisService methods)
     def get_bootstrapped_kpi_cis(self, trades_df: pd.DataFrame, kpis_to_bootstrap: Optional[List[str]] = None) -> Dict[str, Any]:
         if trades_df is None or trades_df.empty: return {"error": "Input data for CI calculation is empty."}
         if kpis_to_bootstrap is None: kpis_to_bootstrap = ['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
@@ -263,13 +269,12 @@ class AnalysisService:
             result = detect_anomalies(data, method=method, contamination=contamination)
             return result if result is not None else {"error": "Anomaly detection returned None."}
         except Exception as e: self.logger.error(f"Error in anomaly detection: {e}", exc_info=True); return {"error": str(e)}
-
-    # perform_cox_ph_analysis was missing, re-added it.
+        
     def perform_cox_ph_analysis(self, df_cox: pd.DataFrame, duration_col: str, event_col: str, covariate_cols: Optional[List[str]]=None) -> Dict[str,Any]:
         self.logger.debug(f"Attempting Cox PH analysis. Lifelines available: {LIFELINES_AVAILABLE}")
         if not LIFELINES_AVAILABLE: 
             return {"error": "Lifelines library not available for Cox PH analysis."}
-        if df_cox is None or df_cox.empty or len(df_cox) < 10: # Cox might need more depending on covariates
+        if df_cox is None or df_cox.empty or len(df_cox) < 10: 
             return {"error": "DataFrame too short or empty for Cox PH model (need at least 10 rows)."}
         
         required_cols = [duration_col, event_col]
@@ -281,7 +286,6 @@ class AnalysisService:
             return {"error": f"Missing columns for Cox PH analysis: {', '.join(missing_cols)}"}
             
         try: 
-            # survival_analysis_cox_ph is imported from ai_models.py
             result = survival_analysis_cox_ph(df_cox, duration_col, event_col, covariate_cols)
             if result is None:
                  return {"error": "Cox PH analysis function returned None unexpectedly."}
