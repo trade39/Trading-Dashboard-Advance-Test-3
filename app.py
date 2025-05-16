@@ -40,7 +40,7 @@ except ImportError as e:
 try:
     from config import (
         APP_TITLE, EXPECTED_COLUMNS, RISK_FREE_RATE,
-        LOG_FILE, LOG_LEVEL, LOG_FORMAT, DEFAULT_BENCHMARK_TICKER, AVAILABLE_BENCHMARKS # Added AVAILABLE_BENCHMARKS
+        LOG_FILE, LOG_LEVEL, LOG_FORMAT, DEFAULT_BENCHMARK_TICKER, AVAILABLE_BENCHMARKS
     )
 except ImportError as e:
     st.error(f"Fatal Error: Could not import configuration. App cannot start. Details: {e}")
@@ -93,10 +93,10 @@ default_session_state = {
     'selected_benchmark_display_name': next((name for name, ticker_val in AVAILABLE_BENCHMARKS.items() if ticker_val == DEFAULT_BENCHMARK_TICKER), "None"),
     'benchmark_daily_returns': None,
     'initial_capital': 100000.0,
-    'last_applied_filters': None, # To track if filters changed
-    'last_fetched_benchmark_ticker': None, # To track if benchmark ticker changed
-    'last_benchmark_data_filter_shape': None, # To track if data range for benchmark changed
-    'last_kpi_calc_state_id': None # To track overall state for KPI recalc
+    'last_applied_filters': None, 
+    'last_fetched_benchmark_ticker': None, 
+    'last_benchmark_data_filter_shape': None, 
+    'last_kpi_calc_state_id': None 
 }
 
 for key, value in default_session_state.items():
@@ -202,31 +202,28 @@ if st.session_state.processed_data is not None and st.session_state.sidebar_filt
 if st.session_state.filtered_data is not None and not st.session_state.filtered_data.empty:
     selected_ticker = st.session_state.get('selected_benchmark_ticker')
     if selected_ticker and selected_ticker != "": 
-        # Determine if refetch is needed
         refetch_benchmark = False
         if st.session_state.benchmark_daily_returns is None:
             refetch_benchmark = True
         elif st.session_state.last_fetched_benchmark_ticker != selected_ticker:
             refetch_benchmark = True
         elif st.session_state.last_benchmark_data_filter_shape != st.session_state.filtered_data.shape:
-             # Date range might have changed due to filtering
             refetch_benchmark = True
 
         if refetch_benchmark:
             date_col_name = EXPECTED_COLUMNS.get('date')
             if date_col_name and date_col_name in st.session_state.filtered_data.columns:
-                # Convert to pd.Timestamp first for robust min/max, then to datetime.date for caching
                 min_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).min()
                 max_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).max()
                 
-                # Convert to datetime.date for passing to cached function
-                min_date_for_cache = min_date_ts.date() if pd.notna(min_date_ts) else None
-                max_date_for_cache = max_date_ts.date() if pd.notna(max_date_ts) else None
+                # Convert to ISO format string for passing to cached function
+                min_date_str = min_date_ts.strftime('%Y-%m-%d') if pd.notna(min_date_ts) else None
+                max_date_str = max_date_ts.strftime('%Y-%m-%d') if pd.notna(max_date_ts) else None
                 
-                if min_date_for_cache and max_date_for_cache:
-                    logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date_for_cache} to {max_date_for_cache}.")
+                if min_date_str and max_date_str:
+                    logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date_str} to {max_date_str}.")
                     st.session_state.benchmark_daily_returns = analysis_service.get_benchmark_data(
-                        selected_ticker, min_date_for_cache, max_date_for_cache # Pass datetime.date objects
+                        selected_ticker, min_date_str, max_date_str # Pass date strings
                     )
                     st.session_state.last_fetched_benchmark_ticker = selected_ticker
                     st.session_state.last_benchmark_data_filter_shape = st.session_state.filtered_data.shape
