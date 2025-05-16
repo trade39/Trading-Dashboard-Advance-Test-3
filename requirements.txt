@@ -1,0 +1,34 @@
+# requirements.txt
+# Pinned Python dependencies for the Trading Performance Dashboard
+
+streamlit>=1.38.0
+pandas>=2.2.0
+numpy>=1.26.0
+plotly>=5.24.0
+python-dateutil>=2.8.2
+scipy>=1.14.0
+statsmodels>=0.14.0
+pymc>=5.10.0
+# As of May 2024, copulas library might have specific dependencies or build requirements.
+# Ensure it installs correctly in your environment. Consider alternatives if issues persist.
+copulas>=0.11.0
+pmdarima>=2.0.4
+# prophet can have installation issues, especially on Windows.
+# Ensure build tools (like C++ compiler) are available or use conda.
+# If prophet is problematic, consider removing or making it optional.
+prophet>=1.1.5
+# TensorFlow or PyTorch for LSTMs/Transformers. Choose one or make installation optional.
+# tensorflow>=2.17.0
+# torch>=2.4.0
+# For simplicity, we'll comment out TF/Torch initially to reduce setup complexity.
+# If specific AI models requiring them are implemented, uncomment the relevant line.
+lifelines>=0.28.0
+ruptures>=1.1.9
+scikit-learn>=1.5.0
+
+# Optional: for improved dependency management
+# poetry>=1.7.0
+# pipenv>=2023.10.3
+
+# Optional: for environment variable management
+# python-dotenv>=1.0.0

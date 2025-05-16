@@ -1,0 +1,327 @@
+/* style.css */
+/* Custom CSS for the Trading Performance Dashboard */
+
+/* --- Base Styles (Applied to body or specific Streamlit containers if needed) --- */
+body {
+    font-family: 'Inter', sans-serif; /* Ensure Inter font is loaded or use a common sans-serif */
+    color: var(--text-color);
+    background-color: var(--background-color);
+}
+
+/* --- Theme Variables --- */
+/* These will be overridden by Streamlit's theme mechanism or inline styles for dynamic theming */
+:root {
+    --primary-color: #4169E1; /* Royal Blue */
+    --positive-color: #00FF00; /* Green */
+    --negative-color: #FF0000; /* Red */
+    --neutral-color: #808080; /* Gray */
+
+    /* Default to Dark Theme Variables */
+    --background-color: #1C2526;
+    --secondary-background-color: #273334; /* For cards, containers */
+    --text-color: #E0E0E0; /* Light gray for text on dark background */
+    --text-muted-color: #A0A0A0;
+    --border-color: var(--primary-color); /* Royal Blue for borders */
+    --card-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Light Theme Variables (If explicitly switched or for future use) */
+[data-theme="light"] {
+    --background-color: #FFFFFF;
+    --secondary-background-color: #F0F2F6;
+    --text-color: #333333;
+    --text-muted-color: #777777;
+    --border-color: var(--primary-color); /* Royal Blue for borders */
+    --card-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+
+/* --- Streamlit Specific Overrides (Use with caution, inspect elements to find correct selectors) --- */
+/* Main content area */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    padding-left: 2rem;
+    padding-right: 2rem;
+    background-color: var(--background-color); /* Ensures main area matches theme */
+}
+
+/* Sidebar */
+.stSidebar {
+    background-color: var(--secondary-background-color) !important; /* Force sidebar background */
+    border-right: 1px solid var(--border-color);
+}
+
+.stSidebar .stMarkdown p,
+.stSidebar .stTextInput label,
+.stSidebar .stDateInput label,
+.stSidebar .stSelectbox label,
+.stSidebar .stMultiSelect label,
+.stSidebar .stButton button {
+    color: var(--text-color) !important;
+}
+
+/* Buttons */
+.stButton > button {
+    background-color: var(--primary-color);
+    color: white; /* Text color for royal blue buttons */
+    border: 1px solid var(--primary-color);
+    border-radius: 8px; /* Rounded corners */
+    padding: 0.5rem 1rem;
+    transition: background-color 0.3s ease, transform 0.1s ease;
+}
+
+.stButton > button:hover {
+    background-color: #3558B4; /* Darker shade of royal blue on hover */
+    border-color: #3558B4;
+    transform: scale(1.02);
+}
+
+.stButton > button:active {
+    transform: scale(0.98);
+}
+
+/* File Uploader */
+.stFileUploader label {
+    color: var(--text-color) !important;
+}
+.stFileUploader > div > button { /* Target the button inside file uploader */
+    background-color: var(--secondary-background-color);
+    color: var(--text-color);
+    border: 1px dashed var(--primary-color);
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    background-color: var(--secondary-background-color);
+    border-radius: 8px;
+    padding: 5px;
+}
+.stTabs [data-baseweb="tab"] {
+    background-color: transparent;
+    color: var(--text-muted-color);
+    border-radius: 6px;
+    margin: 0 2px;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: rgba(65, 105, 225, 0.2); /* Light royal blue background on hover */
+    color: var(--primary-color);
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background-color: var(--primary-color);
+    color: white !important; /* Ensure text is white on selected tab */
+}
+
+/* Expander */
+.stExpander {
+    border: 1px solid var(--border-color) !important;
+    border-radius: 8px !important;
+    background-color: var(--secondary-background-color) !important;
+}
+.stExpander header {
+    background-color: var(--secondary-background-color) !important;
+    color: var(--text-color) !important;
+    border-radius: 8px 8px 0 0 !important;
+}
+.stExpander header:hover {
+    background-color: rgba(65, 105, 225, 0.1) !important;
+}
+
+
+/* --- KPI Card Styles --- */
+.kpi-card {
+    background-color: var(--secondary-background-color);
+    padding: 15px; /* Reduced padding */
+    border-radius: 10px;
+    border: 2px solid var(--border-color); /* Default royal blue border */
+    box-shadow: var(--card-shadow);
+    text-align: center;
+    margin-bottom: 15px; /* Space between cards */
+    transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    height: 180px; /* Fixed height for consistent card size */
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between; /* Distribute space for title, value, interpretation */
+}
+
+.kpi-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+}
+
+.kpi-title {
+    font-size: 0.9rem; /* Smaller title */
+    font-weight: bold;
+    color: var(--text-muted-color);
+    margin-bottom: 5px; /* Reduced margin */
+    white-space: nowrap; /* Prevent title wrapping */
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.kpi-value {
+    font-size: 1.8rem; /* Larger value */
+    font-weight: bold;
+    margin-bottom: 5px; /* Reduced margin */
+    line-height: 1.2;
+}
+
+.kpi-interpretation {
+    font-size: 0.75rem; /* Smaller interpretation text */
+    color: var(--text-muted-color);
+    font-style: italic;
+    line-height: 1.1;
+}
+
+.kpi-confidence-interval {
+    font-size: 0.7rem;
+    color: var(--text-muted-color);
+    margin-top: 3px;
+}
+
+
+/* KPI Card Dynamic Border Colors */
+.kpi-card.positive {
+    border-left: 5px solid var(--positive-color);
+}
+.kpi-card.positive .kpi-value {
+    color: var(--positive-color);
+}
+
+.kpi-card.negative {
+    border-left: 5px solid var(--negative-color);
+}
+.kpi-card.negative .kpi-value {
+    color: var(--negative-color);
+}
+
+.kpi-card.neutral {
+    border-left: 5px solid var(--neutral-color);
+}
+.kpi-card.neutral .kpi-value {
+    color: var(--neutral-color);
+}
+
+
+/* --- Data Table Styles --- */
+.stDataFrame, .stTable { /* Covers both st.dataframe and st.table */
+    width: 100%;
+    border-radius: 8px;
+    overflow: hidden; /* Ensures child elements adhere to border radius */
+}
+
+/* Style the header */
+.stDataFrame table th, .stTable table th {
+    background-color: var(--primary-color) !important; /* Royal blue header */
+    color: white !important; /* White text for header */
+    font-weight: bold;
+    text-align: left;
+    padding: 10px 8px !important;
+}
+
+/* Style the rows */
+.stDataFrame table td, .stTable table td {
+    padding: 8px !important;
+    border-bottom: 1px solid var(--border-color); /* Light border for rows */
+    color: var(--text-color); /* Text color for table cells */
+}
+
+/* Alternating row colors for better readability (optional) */
+.stDataFrame table tr:nth-child(even) td, .stTable table tr:nth-child(even) td {
+    background-color: rgba(0,0,0,0.05); /* Slightly darker for even rows in dark theme */
+}
+[data-theme="light"] .stDataFrame table tr:nth-child(even) td,
+[data-theme="light"] .stTable table tr:nth-child(even) td {
+    background-color: rgba(0,0,0,0.02); /* Slightly darker for even rows in light theme */
+}
+
+
+/* --- Metric Display (st.metric) --- */
+div[data-testid="stMetric"] {
+    background-color: var(--secondary-background-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: var(--card-shadow);
+}
+
+div[data-testid="stMetric"] label { /* Metric label */
+    color: var(--text-muted-color);
+}
+
+div[data-testid="stMetric"] div[data-testid="stMetricValue"] { /* Metric value */
+    color: var(--text-color);
+}
+
+div[data-testid="stMetric"] div[data-testid="stMetricDelta"] svg { /* Delta indicator icon */
+    fill: var(--text-color); /* Or specific color based on positive/negative delta */
+}
+
+
+/* --- General Text and Headers --- */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--text-color);
+}
+
+p, li, label {
+    color: var(--text-color);
+}
+
+a {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+a:hover {
+    text-decoration: underline;
+}
+
+/* Ensure Plotly charts use the available width */
+.plotly-chart {
+    width: 100% !important;
+}
+
+/* Custom scrollbar for dark theme (optional, browser support varies) */
+::-webkit-scrollbar {
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+    background: var(--secondary-background-color);
+    border-radius: 5px;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--primary-color);
+    border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #3558B4; /* Darker royal blue */
+}
+
+/* Message box for errors/warnings (instead of alert()) */
+.message-box {
+    padding: 1rem;
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 8px;
+    border: 1px solid;
+    font-size: 0.9rem;
+}
+.message-box.error {
+    background-color: rgba(255, 0, 0, 0.1); /* Light red background */
+    border-color: var(--negative-color);
+    color: var(--negative-color);
+}
+.message-box.warning {
+    background-color: rgba(255, 165, 0, 0.1); /* Light orange background */
+    border-color: orange;
+    color: orange;
+}
+.message-box.info {
+    background-color: rgba(65, 105, 225, 0.1); /* Light blue background */
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+.message-box.success {
+    background-color: rgba(0, 255, 0, 0.1); /* Light green background */
+    border-color: var(--positive-color);
+    color: var(--positive-color);
+}
