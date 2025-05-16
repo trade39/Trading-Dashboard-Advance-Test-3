@@ -43,46 +43,57 @@ import logging
 logger = logging.getLogger(APP_TITLE)
 
 # --- Standalone Cached Function for Benchmark Data ---
-@st.cache_data(ttl=3600) # Temporarily removed show_spinner for debugging
-def get_benchmark_data_static(
+# Temporarily commenting out @st.cache_data for debugging the UnhashableTypeError
+# @st.cache_data(ttl=3600) 
+def get_benchmark_data_static( 
     ticker: str, 
     start_date_str: str, 
     end_date_str: str
 ) -> Optional[pd.Series]:
+    """
+    Fetches historical 'Adj Close' prices for a given ticker and calculates daily returns.
+    Dates are expected as ISO format strings.
+    This is a module-level function.
+    Caching is temporarily disabled for debugging.
+    """
     logger_static_func = logging.getLogger(f"{APP_TITLE}.get_benchmark_data_static")
+    logger_static_func.info(f"Executing get_benchmark_data_static (caching TEMPORARILY DISABLED) for {ticker} from {start_date_str} to {end_date_str}")
 
     if not ticker:
         logger_static_func.info("No benchmark ticker provided. Skipping data fetch.")
         return None
     try:
+        logger_static_func.debug("Attempting to convert date strings to datetime objects...")
         start_dt = pd.to_datetime(start_date_str)
         end_dt = pd.to_datetime(end_date_str)
+        logger_static_func.debug(f"Converted dates: start_dt={start_dt}, end_dt={end_dt}")
 
         if start_dt >= end_dt:
-            logger_static_func.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str} in get_benchmark_data_static. Cannot fetch data.")
+            logger_static_func.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str}. Cannot fetch data.")
             return None
 
         fetch_end_dt = end_dt + pd.Timedelta(days=1)
-
-        logger_static_func.info(f"Fetching benchmark data for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()}) via get_benchmark_data_static")
+        logger_static_func.info(f"Attempting yf.download for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()})")
+        
         data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False, auto_adjust=True, actions=False)
+        logger_static_func.debug(f"yf.download result for {ticker}:\n{data.head() if not data.empty else 'Empty DataFrame'}")
         
         if data.empty or 'Close' not in data.columns:
-            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str} (get_benchmark_data_static).")
+            logger_static_func.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str}.")
             return None
         
         daily_adj_close = data['Close'].dropna()
         if len(daily_adj_close) < 2:
-            logger_static_func.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2) in get_benchmark_data_static.")
+            logger_static_func.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
             return None
             
         daily_returns = daily_adj_close.pct_change().dropna()
         daily_returns.name = f"{ticker}_returns"
         
-        logger_static_func.info(f"Successfully fetched and processed benchmark returns for {ticker} via get_benchmark_data_static. Shape: {daily_returns.shape}")
+        logger_static_func.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
         return daily_returns
     except Exception as e:
-        logger_static_func.error(f"Error fetching benchmark data for {ticker} in get_benchmark_data_static: {e}", exc_info=True)
+        logger_static_func.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
         return None
 
 class AnalysisService:
