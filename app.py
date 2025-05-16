@@ -30,7 +30,7 @@ except ImportError as e:
 # --- Service Modules ---
 try:
     from services.data_service import DataService
-    from services.analysis_service import AnalysisService
+    from services.analysis_service import AnalysisService # Class name
 except ImportError as e:
     st.error(f"Fatal Error: Could not import service modules. App cannot start. Details: {e}")
     logging.error(f"Fatal Error importing services: {e}", exc_info=True)
@@ -107,7 +107,8 @@ logger.debug("Global session state initialized/checked.")
 
 # --- Instantiate Services ---
 data_service = DataService()
-analysis_service = AnalysisService()
+# analysis_service instance is still needed for other non-static methods
+analysis_service_instance = AnalysisService() # Keep instance for other methods
 logger.debug("DataService and AnalysisService instantiated.")
 
 
@@ -126,7 +127,6 @@ current_sidebar_filters = sidebar_manager.render_sidebar_controls()
 
 st.session_state.sidebar_filters = current_sidebar_filters
 
-# Update session state from sidebar if changes occurred
 if current_sidebar_filters:
     rfr_from_sidebar = current_sidebar_filters.get('risk_free_rate', RISK_FREE_RATE)
     if st.session_state.risk_free_rate != rfr_from_sidebar:
@@ -216,14 +216,14 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                 min_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).min()
                 max_date_ts = pd.to_datetime(st.session_state.filtered_data[date_col_name]).max()
                 
-                # Convert to ISO format string for passing to cached function
                 min_date_str = min_date_ts.strftime('%Y-%m-%d') if pd.notna(min_date_ts) else None
                 max_date_str = max_date_ts.strftime('%Y-%m-%d') if pd.notna(max_date_ts) else None
                 
                 if min_date_str and max_date_str:
                     logger.info(f"Fetching benchmark data for {selected_ticker} from {min_date_str} to {max_date_str}.")
-                    st.session_state.benchmark_daily_returns = analysis_service.get_benchmark_data(
-                        selected_ticker, min_date_str, max_date_str # Pass date strings
+                    # Call as a static method on the class
+                    st.session_state.benchmark_daily_returns = AnalysisService.get_benchmark_data(
+                        selected_ticker, min_date_str, max_date_str 
                     )
                     st.session_state.last_fetched_benchmark_ticker = selected_ticker
                     st.session_state.last_benchmark_data_filter_shape = st.session_state.filtered_data.shape
@@ -258,9 +258,10 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
     if st.session_state.kpi_results is None or \
        st.session_state.last_kpi_calc_state_id != current_kpi_calc_state_id:
         
-        logger.info("Recalculating global KPIs and CIs via AnalysisService...")
+        logger.info("Recalculating global KPIs and CIs...") # Removed "via AnalysisService" as it's direct
         with st.spinner("Calculating performance metrics & CIs..."):
-            kpi_service_result = analysis_service.get_core_kpis(
+            # Use the instance for get_core_kpis
+            kpi_service_result = analysis_service_instance.get_core_kpis(
                 st.session_state.filtered_data,
                 st.session_state.risk_free_rate,
                 benchmark_daily_returns=st.session_state.get('benchmark_daily_returns'),
@@ -272,7 +273,8 @@ if st.session_state.filtered_data is not None and not st.session_state.filtered_
                 st.session_state.last_kpi_calc_state_id = current_kpi_calc_state_id
                 logger.info("Global KPIs calculated.")
 
-                ci_service_result = analysis_service.get_bootstrapped_kpi_cis(
+                # Use the instance for get_bootstrapped_kpi_cis
+                ci_service_result = analysis_service_instance.get_bootstrapped_kpi_cis(
                     st.session_state.filtered_data,
                     kpis_to_bootstrap=['avg_trade_pnl', 'win_rate', 'sharpe_ratio']
                 )
