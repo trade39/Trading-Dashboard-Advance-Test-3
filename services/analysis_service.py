@@ -37,61 +37,68 @@ except ImportError as e:
 
 
 import logging
+# Logger is obtained using APP_TITLE which should be available from config
+# If this script is run standalone and config import fails, APP_TITLE has a fallback.
 logger = logging.getLogger(APP_TITLE)
 
 class AnalysisService:
     def __init__(self):
-        logger.info("AnalysisService initialized.")
-        if not PMDARIMA_AVAILABLE: logger.warning("PMDARIMA (auto_arima) unavailable in AnalysisService.")
-        if not PROPHET_AVAILABLE: logger.warning("Prophet unavailable in AnalysisService.")
-        if not LIFELINES_AVAILABLE: logger.warning("Lifelines (survival analysis) unavailable in AnalysisService.")
+        # Logger is already configured by app.py, or logger.py if run standalone.
+        # We can use self.logger if we want to pass the logger instance around,
+        # but direct logging.getLogger(APP_TITLE) is also fine.
+        self.logger = logging.getLogger(APP_TITLE)
+        self.logger.info("AnalysisService initialized.")
+        if not PMDARIMA_AVAILABLE: self.logger.warning("PMDARIMA (auto_arima) unavailable in AnalysisService.")
+        if not PROPHET_AVAILABLE: self.logger.warning("Prophet unavailable in AnalysisService.")
+        if not LIFELINES_AVAILABLE: self.logger.warning("Lifelines (survival analysis) unavailable in AnalysisService.")
 
+    @staticmethod # Decorate as a static method
     @st.cache_data(ttl=3600, show_spinner="Fetching benchmark data...") 
     def get_benchmark_data(
-        self, 
         ticker: str, 
-        start_date_str: str, # Expect ISO format string: "YYYY-MM-DD"
-        end_date_str: str    # Expect ISO format string: "YYYY-MM-DD"
+        start_date_str: str, 
+        end_date_str: str
     ) -> Optional[pd.Series]:
         """
         Fetches historical 'Adj Close' prices for a given ticker and calculates daily returns.
         Dates are expected as ISO format strings for reliable caching.
+        This is a static method, so it does not use `self`.
         """
+        # Access logger directly as it's configured globally
+        logger_static = logging.getLogger(APP_TITLE)
+
         if not ticker:
-            logger.info("No benchmark ticker provided. Skipping data fetch.")
+            logger_static.info("No benchmark ticker provided. Skipping data fetch.")
             return None
         try:
-            # Convert string dates to datetime objects for yfinance
-            # yfinance usually handles string dates well, but explicit conversion is safer.
             start_dt = pd.to_datetime(start_date_str)
             end_dt = pd.to_datetime(end_date_str)
 
             if start_dt >= end_dt:
-                logger.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str}. Cannot fetch data.")
+                logger_static.warning(f"Benchmark start date {start_date_str} is not before end date {end_date_str}. Cannot fetch data.")
                 return None
 
-            # yfinance end_date is inclusive for daily data. To be safe, add 1 day to ensure data for end_dt is included.
             fetch_end_dt = end_dt + pd.Timedelta(days=1)
 
-            logger.info(f"Fetching benchmark data for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()})")
-            data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False)
+            logger_static.info(f"Fetching benchmark data for {ticker} from {start_dt.date()} to {end_dt.date()} (fetching up to {fetch_end_dt.date()})")
+            data = yf.download(ticker, start=start_dt, end=fetch_end_dt, progress=False, auto_adjust=True, actions=False) # auto_adjust=True gives Adj Close
             
-            if data.empty or 'Adj Close' not in data.columns:
-                logger.warning(f"No data or 'Adj Close' not found for benchmark {ticker} in period {start_date_str} - {end_date_str}.")
+            if data.empty or 'Close' not in data.columns: # yf.download with auto_adjust=True typically returns 'Close' as adjusted
+                logger_static.warning(f"No data or 'Close' (adjusted) not found for benchmark {ticker} in period {start_date_str} - {end_date_str}.")
                 return None
             
-            daily_adj_close = data['Adj Close'].dropna()
+            daily_adj_close = data['Close'].dropna() # Use 'Close' as it's adjusted
             if len(daily_adj_close) < 2:
-                logger.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
+                logger_static.warning(f"Not enough benchmark data points for {ticker} to calculate returns (<2).")
                 return None
                 
             daily_returns = daily_adj_close.pct_change().dropna()
             daily_returns.name = f"{ticker}_returns"
             
-            logger.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
+            logger_static.info(f"Successfully fetched and processed benchmark returns for {ticker}. Shape: {daily_returns.shape}")
             return daily_returns
         except Exception as e:
-            logger.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
+            logger_static.error(f"Error fetching benchmark data for {ticker}: {e}", exc_info=True)
             return None
 
     def get_core_kpis(
@@ -117,9 +124,9 @@ class AnalysisService:
                 initial_capital=initial_capital
             )
             if pd.isna(kpi_results.get('total_pnl')) and pd.isna(kpi_results.get('sharpe_ratio')):
-                 logger.warning("Several critical KPIs are NaN. This might indicate issues with input PnL data.")
+                 self.logger.warning("Several critical KPIs are NaN. This might indicate issues with input PnL data.")
             return kpi_results
-        except Exception as e: logger.error(f"Error calculating core KPIs: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error calculating core KPIs: {e}", exc_info=True); return {"error": str(e)}
 
     # ... (rest of AnalysisService methods remain unchanged for this fix) ...
     def get_bootstrapped_kpi_cis(self, trades_df: pd.DataFrame, kpis_to_bootstrap: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -152,9 +159,9 @@ class AnalysisService:
                 try:
                     res = bootstrap_confidence_interval(pnl_series, _statistic_func=stat_fn)
                     if 'error' not in res: confidence_intervals[kpi_key] = (res['lower_bound'], res['upper_bound'])
-                    else: confidence_intervals[kpi_key] = (np.nan, np.nan); logger.warning(f"CI calc error for {kpi_key}: {res['error']}")
-                except Exception as e: logger.error(f"Exception during bootstrap for {kpi_key}: {e}", exc_info=True); confidence_intervals[kpi_key] = (np.nan, np.nan)
-            else: confidence_intervals[kpi_key] = (np.nan, np.nan); logger.warning(f"No CI stat_fn for {kpi_key}")
+                    else: confidence_intervals[kpi_key] = (np.nan, np.nan); self.logger.warning(f"CI calc error for {kpi_key}: {res['error']}")
+                except Exception as e: self.logger.error(f"Exception during bootstrap for {kpi_key}: {e}", exc_info=True); confidence_intervals[kpi_key] = (np.nan, np.nan)
+            else: confidence_intervals[kpi_key] = (np.nan, np.nan); self.logger.warning(f"No CI stat_fn for {kpi_key}")
         return confidence_intervals
 
     def get_single_bootstrap_ci_visual_data(
@@ -178,7 +185,7 @@ class AnalysisService:
             )
             return results
         except Exception as e:
-            logger.error(f"Error in get_single_bootstrap_ci_visual_data: {e}", exc_info=True)
+            self.logger.error(f"Error in get_single_bootstrap_ci_visual_data: {e}", exc_info=True)
             return {"error": str(e)}
 
     def get_time_series_decomposition(self, series: pd.Series, model: str = 'additive', period: Optional[int] = None) -> Dict[str, Any]:
@@ -188,37 +195,37 @@ class AnalysisService:
         try: 
             result = decompose_time_series(series.dropna(), model=model, period=period)
             return {"decomposition_result": result} if result is not None else {"error": "Decomposition returned None."}
-        except Exception as e: logger.error(f"Error in TS decomp: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in TS decomp: {e}", exc_info=True); return {"error": str(e)}
     
     def analyze_pnl_distribution_fit(self, pnl_series: pd.Series, distributions_to_try: Optional[List[str]] = None) -> Dict[str, Any]:
         if pnl_series is None or pnl_series.dropna().empty: return {"error": "PnL series is empty."}
         try: return fit_distributions_to_pnl(pnl_series.dropna(), distributions_to_try=distributions_to_try)
-        except Exception as e: logger.error(f"Error in PnL dist fit: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in PnL dist fit: {e}", exc_info=True); return {"error": str(e)}
 
     def find_change_points(self, series: pd.Series, model: str = "l2", penalty: str = "bic") -> Dict[str, Any]:
         if series is None or series.dropna().empty or len(series.dropna()) < 10: return {"error": "Series too short for change point detection."}
         try: return detect_change_points(series.dropna(), model=model, penalty=penalty)
-        except Exception as e: logger.error(f"Error in change point detect: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in change point detect: {e}", exc_info=True); return {"error": str(e)}
 
     def run_gbm_simulation(self, s0: float, mu: float, sigma: float, dt: float, n_steps: int, n_sims: int = 1) -> Dict[str, Any]:
         try:
             paths = simulate_gbm(s0, mu, sigma, dt, n_steps, n_sims)
             return {"paths": paths} if (paths is not None and paths.size > 0) else {"error": "GBM simulation returned empty or invalid paths."}
-        except Exception as e: logger.error(f"Error in GBM sim: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in GBM sim: {e}", exc_info=True); return {"error": str(e)}
 
     def estimate_ornstein_uhlenbeck(self, series: pd.Series) -> Dict[str, Any]:
         if series is None or series.dropna().empty or len(series.dropna()) < 20: return {"error": "Series too short for OU fitting."}
         try: 
             result = fit_ornstein_uhlenbeck(series.dropna())
             return result if result is not None else {"error": "OU fitting returned None."}
-        except Exception as e: logger.error(f"Error in OU fit: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in OU fit: {e}", exc_info=True); return {"error": str(e)}
 
     def analyze_markov_chain_trades(self, pnl_series: pd.Series, n_states: int = 2) -> Dict[str, Any]:
         if pnl_series is None or pnl_series.dropna().empty or len(pnl_series.dropna()) < 10: return {"error": "PnL series too short for Markov chain."}
         try: 
             result = fit_markov_chain_trade_sequence(pnl_series.dropna(), n_states=n_states)
             return result if result is not None else {"error": "Markov chain analysis returned None."}
-        except Exception as e: logger.error(f"Error in Markov chain: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in Markov chain: {e}", exc_info=True); return {"error": str(e)}
 
     def get_arima_forecast(self, series: pd.Series, order: Optional[Tuple[int,int,int]]=None, seasonal_order: Optional[Tuple[int, int, int, int]] = None, n_periods: int = FORECAST_HORIZON) -> Dict[str,Any]:
         if not PMDARIMA_AVAILABLE and order is None: return {"error": "pmdarima (for auto_arima) is not available. Please specify ARIMA order or check installation."}
@@ -226,7 +233,7 @@ class AnalysisService:
         try: 
             result = forecast_arima(series.dropna(), order=order, seasonal_order=seasonal_order, n_periods=n_periods)
             return result if result is not None else {"error": "ARIMA forecast returned None."}
-        except Exception as e: logger.error(f"Error in ARIMA forecast: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in ARIMA forecast: {e}", exc_info=True); return {"error": str(e)}
 
     def get_prophet_forecast(self, series_df: pd.DataFrame, n_periods: int = FORECAST_HORIZON) -> Dict[str,Any]:
         if not PROPHET_AVAILABLE: return {"error": "Prophet library not installed/loaded."}
@@ -234,14 +241,14 @@ class AnalysisService:
         try: 
             result = forecast_prophet(series_df, n_periods=n_periods)
             return result if result is not None else {"error": "Prophet forecast returned None."}
-        except Exception as e: logger.error(f"Error in Prophet forecast: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in Prophet forecast: {e}", exc_info=True); return {"error": str(e)}
 
     def find_anomalies(self, data: Union[pd.DataFrame, pd.Series], method: str = 'isolation_forest', contamination: Union[str, float] = 'auto') -> Dict[str, Any]:
         if data is None or data.empty or len(data) < 10: return {"error": "Data too short for anomaly detection."}
         try: 
             result = detect_anomalies(data, method=method, contamination=contamination)
             return result if result is not None else {"error": "Anomaly detection returned None."}
-        except Exception as e: logger.error(f"Error in anomaly detection: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in anomaly detection: {e}", exc_info=True); return {"error": str(e)}
 
     def perform_kaplan_meier_analysis(self, durations: pd.Series, event_observed: pd.Series) -> Dict[str, Any]:
         if not LIFELINES_AVAILABLE: return {"error": "Lifelines library not available."}
@@ -249,7 +256,7 @@ class AnalysisService:
         try: 
             result = survival_analysis_kaplan_meier(durations.dropna(), event_observed.loc[durations.dropna().index])
             return result if result is not None else {"error": "Kaplan-Meier analysis returned None."}
-        except Exception as e: logger.error(f"Error in Kaplan-Meier: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in Kaplan-Meier: {e}", exc_info=True); return {"error": str(e)}
 
     def perform_cox_ph_analysis(self, df_cox: pd.DataFrame, duration_col: str, event_col: str, covariate_cols: Optional[List[str]]=None) -> Dict[str,Any]:
         if not LIFELINES_AVAILABLE: return {"error": "Lifelines library not available."}
@@ -257,11 +264,11 @@ class AnalysisService:
         try: 
             result = survival_analysis_cox_ph(df_cox, duration_col, event_col, covariate_cols)
             return result if result is not None else {"error": "Cox PH analysis returned None."}
-        except Exception as e: logger.error(f"Error in Cox PH: {e}", exc_info=True); return {"error": str(e)}
+        except Exception as e: self.logger.error(f"Error in Cox PH: {e}", exc_info=True); return {"error": str(e)}
 
     def generate_pnl_distribution_plot(self, trades_df: pd.DataFrame, theme: str = 'dark') -> Optional[Any]:
         if trades_df is None or trades_df.empty: return None
         pnl_col = EXPECTED_COLUMNS.get('pnl')
         if not pnl_col or pnl_col not in trades_df.columns: return None
         try: return plot_pnl_distribution(trades_df, pnl_col=pnl_col, title="PnL Distribution (per Trade)", theme=theme)
-        except Exception as e: logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return None
+        except Exception as e: self.logger.error(f"Error generating PnL dist plot: {e}", exc_info=True); return None
